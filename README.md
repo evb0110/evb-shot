@@ -68,7 +68,9 @@ The CleanShot research in `docs/research` informed the feature boundaries and ed
 
 GitHub Actions **CI** builds and exercises the native app on Apple Silicon macOS, including independent PNG verification. The **Release** workflow runs those checks before packaging and publishing a `v*` tag. `workflow_dispatch` builds the same archive as an Actions artifact without publishing.
 
-To release, update `CFBundleShortVersionString` and `CFBundleVersion` in `Resources/Info.plist`, update `docs/release-notes.md`, push the verified source, and push a matching version tag such as `v0.1.0`. A mismatched tag is rejected. The archive has a stable name for the landing page, SHA-256 checksums, and a source commit receipt. Hosted packages are ad-hoc signed; signing credentials are not embedded in the repository. There are no automatic application updates yet.
+To release, update `CFBundleShortVersionString` and `CFBundleVersion` in `Resources/Info.plist`, update `docs/release-notes.md`, push the verified source, and push a matching version tag such as `v0.1.1`. A mismatched tag is rejected. The archive has a stable name for the landing page, SHA-256 checksums, and a source commit receipt. Hosted packages are ad-hoc signed; signing credentials are not embedded in the repository. There are no automatic application updates yet.
+
+CI requires 20 consecutive native editor runs, independent PNG pixel checks, media export checks, and landing asset checks. Test output is unbuffered, and failed jobs report available native crash diagnostics. A failed run stops validation; there are no pass-on-retry checks.
 
 For local packaging, run `bash scripts/package-release.sh`. Optional `EVBSHOT_SIGN_IDENTITY` and `EVBSHOT_NOTARY_PROFILE` use your existing Developer ID and notarization credentials. No signing keys are exported or uploaded.
 
