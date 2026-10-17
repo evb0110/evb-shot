@@ -12,6 +12,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
     private let dimensions = NSTextField(labelWithString: "")
     private let status = NSTextField(labelWithString: "")
     private let audio = NSButton(checkboxWithTitle: "Include audio", target: nil, action: nil)
+    private let audioPlay = NSButton(title:"Play",target:nil,action:nil)
     private let savePath = NSButton(title: "Save & Copy Path", target: nil, action: nil)
     private let save = NSButton(title: "Save", target: nil, action: nil)
     private let cropApply = NSButton(title: "Crop", target: nil, action: nil)
@@ -38,12 +39,13 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
     private var savedState: ImageEditState?
     var onClose: (() -> Void)?
 
-    init(_ artifact: CaptureArtifact, editingWorkspace: URL? = nil, saveSettings: CaptureSaveSettings = CaptureSaveSettings(), pasteboard: NSPasteboard = .general) {
+    init(_ artifact: CaptureArtifact, editingWorkspace: URL? = nil, saveSettings: CaptureSaveSettings = CaptureSaveSettings(), pasteboard: NSPasteboard = .general, mutePlayback:Bool = false) {
         self.artifact = artifact
         self.saveSettings = saveSettings; self.pasteboard = pasteboard
         let compact = artifact.kind != .image
         let initialSize = NSSize(width:compact ? 420 : 820,height:artifact.kind == .audio ? 150 : compact ? 270 : 580)
-        let window = EditorWindow(contentRect:CGRect(origin:.zero,size:initialSize), styleMask:[.titled,.closable,.resizable,.miniaturizable], backing:.buffered, defer:false)
+        let style:NSWindow.StyleMask = compact ? [.titled,.closable,.miniaturizable] : [.titled,.closable,.resizable,.miniaturizable]
+        let window = EditorWindow(contentRect:CGRect(origin:.zero,size:initialSize), styleMask:style, backing:.buffered, defer:false)
         window.title = "EVB Shot"; window.titleVisibility = .hidden; window.toolbarStyle = .unifiedCompact
         window.isReleasedWhenClosed = false; window.hidesOnDeactivate = false
         if compact { window.level = .floating; window.collectionBehavior = [.canJoinAllSpaces,.fullScreenAuxiliary] }
@@ -66,6 +68,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
             } catch { status.stringValue = error.localizedDescription }
         } else {
             player = AVPlayer(url:artifact.url)
+            player?.isMuted = mutePlayback
         }
         setupControls()
         let toolbar = NSToolbar(identifier:"EVBShot.Editor")
@@ -87,9 +90,14 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
                     poster.imageScaling = .scaleProportionallyUpOrDown; poster.image = artifact.preview
                     poster.translatesAutoresizingMaskIntoConstraints = false; overlay.addSubview(poster)
                     NSLayoutConstraint.activate([poster.leadingAnchor.constraint(equalTo:overlay.leadingAnchor),poster.trailingAnchor.constraint(equalTo:overlay.trailingAnchor),poster.topAnchor.constraint(equalTo:overlay.topAnchor),poster.bottomAnchor.constraint(equalTo:overlay.bottomAnchor)])
-                    playbackObservation = player?.observe(\.rate,options:[.new]) { [weak poster] player,_ in
+                    let play = NSButton(image:NSImage(systemSymbolName:"play.circle.fill",accessibilityDescription:"Play recording")!,target:self,action:#selector(togglePlayback))
+                    play.identifier = NSUserInterfaceItemIdentifier("VideoPlayback"); play.isBordered = false; play.contentTintColor = .white
+                    play.symbolConfiguration = .init(pointSize:44,weight:.regular); play.translatesAutoresizingMaskIntoConstraints = false
+                    overlay.addSubview(play)
+                    NSLayoutConstraint.activate([play.centerXAnchor.constraint(equalTo:overlay.centerXAnchor),play.centerYAnchor.constraint(equalTo:overlay.centerYAnchor)])
+                    playbackObservation = player?.observe(\.rate,options:[.new]) { [weak poster,weak play] player,_ in
                         guard player.rate > 0 else { return }
-                        Task { @MainActor in poster?.isHidden = true }
+                        Task { @MainActor in poster?.isHidden = true; play?.isHidden = true }
                     }
                     if poster.image == nil {
                         let generator = AVAssetImageGenerator(asset:AVURLAsset(url:artifact.url))
@@ -110,9 +118,18 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
                 let symbol = NSImageView(image:NSImage(systemSymbolName:"waveform",accessibilityDescription:"Audio recording")!)
                 symbol.contentTintColor = .secondaryLabelColor; symbol.symbolConfiguration = .init(pointSize:30,weight:.regular)
                 symbol.heightAnchor.constraint(equalToConstant:64).isActive = true
-                view.controlsStyle = .minimal; view.heightAnchor.constraint(equalToConstant:44).isActive = true
-                let audioCard = NSStackView(views:[symbol,view]); audioCard.orientation = .vertical; audioCard.spacing = 0
-                audioCard.alignment = .centerX; view.widthAnchor.constraint(equalTo:audioCard.widthAnchor).isActive = true
+                audioPlay.target = self; audioPlay.action = #selector(togglePlayback); audioPlay.bezelStyle = .rounded
+                audioPlay.identifier = NSUserInterfaceItemIdentifier("AudioPlayback")
+                audioPlay.image = NSImage(systemSymbolName:"play.fill",accessibilityDescription:nil); audioPlay.imagePosition = .imageLeading
+                let audioCard = NSStackView(views:[symbol,audioPlay]); audioCard.orientation = .vertical; audioCard.spacing = 8
+                audioCard.alignment = .centerX
+                playbackObservation = player?.observe(\.rate,options:[.new]) { [weak self] player,_ in
+                    let playing = player.rate > 0
+                    Task { @MainActor in
+                        self?.audioPlay.title = playing ? "Pause" : "Play"
+                        self?.audioPlay.image = NSImage(systemSymbolName:playing ? "pause.fill" : "play.fill",accessibilityDescription:nil)
+                    }
+                }
                 main = audioCard
             }
         }
@@ -137,10 +154,10 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
             main.topAnchor.constraint(equalTo:content.topAnchor), main.bottomAnchor.constraint(equalTo:footer.topAnchor),
             footer.leadingAnchor.constraint(equalTo:content.leadingAnchor), footer.trailingAnchor.constraint(equalTo:content.trailingAnchor),
             footer.bottomAnchor.constraint(equalTo:content.bottomAnchor), footer.heightAnchor.constraint(equalToConstant:34),
-            content.widthAnchor.constraint(greaterThanOrEqualToConstant:min(compact ? 360 : 700,maximum.width)),
-            content.widthAnchor.constraint(lessThanOrEqualToConstant:min(1100,maximum.width)),
-            content.heightAnchor.constraint(greaterThanOrEqualToConstant:min(compact ? (artifact.kind == .audio ? 142 : 220) : 380,maximum.height)),
-            content.heightAnchor.constraint(lessThanOrEqualToConstant:maximum.height)
+            content.widthAnchor.constraint(greaterThanOrEqualToConstant:min(compact ? initialSize.width : 700,maximum.width)),
+            content.widthAnchor.constraint(lessThanOrEqualToConstant:min(compact ? initialSize.width : 1100,maximum.width)),
+            content.heightAnchor.constraint(greaterThanOrEqualToConstant:min(compact ? initialSize.height : 380,maximum.height)),
+            content.heightAnchor.constraint(lessThanOrEqualToConstant:min(compact ? initialSize.height : maximum.height,maximum.height))
         ])
         window.contentView = content
         window.setContentSize(NSSize(width:min(initialSize.width,maximum.width),height:min(initialSize.height,maximum.height)))
@@ -248,6 +265,14 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
     @objc private func applyCrop() { canvas?.applyCrop(); updateControls() }
     @objc private func cancelCrop() { canvas?.setTool(.select); updateControls() }
     @objc private func saveAndCopy() { saveCapture(copy:true) }
+    @objc private func togglePlayback() {
+        guard let player else { return }
+        if player.rate > 0 { player.pause(); return }
+        let duration = player.currentItem?.duration.seconds ?? .nan
+        if duration.isFinite, duration > 0, player.currentTime().seconds >= duration - 0.1 {
+            player.seek(to:.zero,toleranceBefore:.zero,toleranceAfter:.zero) { [weak player] finished in if finished { player?.play() } }
+        } else { player.play() }
+    }
     @objc private func saveOnly() { saveCapture(copy:false) }
     @objc private func revealDraft() { NSWorkspace.shared.activateFileViewerSelecting([lastSavedURL ?? artifact.url]) }
     func windowShouldClose(_ sender:NSWindow) -> Bool {

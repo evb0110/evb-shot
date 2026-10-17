@@ -51,20 +51,23 @@ enum EditorTest {
             guard let button = views.compactMap({ $0 as? NSButton }).first(where: { $0.title == title }) else { throw ShotError("Missing result action: \(title)") }
             return button
         }
-        let controller = ResultController(video,saveSettings:settings,pasteboard:board)
+        let controller = ResultController(video,saveSettings:settings,pasteboard:board,mutePlayback:true)
         defer { controller.close() }
         try SelfTest.check(controller.window!.frame.width <= 500 && controller.window!.frame.height <= 400,"Stop must open a compact media preview instead of another large window")
         let available = NSScreen.underPointer.visibleFrame.insetBy(dx:16,dy:16)
         try SelfTest.check(abs(controller.window!.frame.maxX-available.maxX)<1 && abs(controller.window!.frame.minY-available.minY)<1,"recording preview opens in the screen corner")
         controller.window!.setFrameOrigin(CGPoint(x:-20000,y:-20000))
         controller.showWindow(nil)
+        controller.window!.contentView!.layoutSubtreeIfNeeded()
+        try SelfTest.check(controller.window!.frame.width <= 500 && controller.window!.frame.height <= 400 && controller.window!.contentView!.fittingSize.width <= 500,"native player intrinsic size cannot enlarge the corner preview after showing")
         let views = descendants(controller.window!.contentView!)
         guard let poster = views.compactMap({ $0 as? NSImageView }).first(where: { $0.identifier?.rawValue == "RecordingPoster" }) else { throw ShotError("Video review needs a first-frame preview") }
         for _ in 0..<100 where poster.image == nil { try await Task.sleep(nanoseconds:20_000_000) }
         try SelfTest.check(poster.image != nil && !poster.isHidden,"paused preview displays a decoded frame, not a black player")
         try await render(controller,name:"recording-review",folder:folder)
         guard let view = views.compactMap({ $0 as? AVPlayerView }).first else { throw ShotError("Missing native playback controls") }
-        view.player?.isMuted = true; view.player?.play()
+        guard let play = views.compactMap({ $0 as? NSButton }).first(where: { $0.identifier?.rawValue == "VideoPlayback" }) else { throw ShotError("Missing visible preview Play button") }
+        play.performClick(nil)
         for _ in 0..<100 where !poster.isHidden { try await Task.sleep(nanoseconds:20_000_000) }
         try SelfTest.check(poster.isHidden,"playing removes the first-frame poster")
         view.player?.pause()
@@ -79,11 +82,20 @@ enum EditorTest {
         let audioTracks = try await AVURLAsset(url:saved).loadTracks(withMediaType:.audio)
         try SelfTest.check(audioTracks.isEmpty,"Include audio off produces a silent saved video")
         if let audio {
-            let audioController = ResultController(audio,saveSettings:settings,pasteboard:board)
+            let audioController = ResultController(audio,saveSettings:settings,pasteboard:board,mutePlayback:true)
             defer { audioController.close() }
             try SelfTest.check(audioController.window!.frame.width <= 500 && audioController.window!.frame.height <= 280,"audio recording uses a compact playback card")
             audioController.window!.setFrameOrigin(CGPoint(x:-20000,y:-20000))
             audioController.showWindow(nil)
+            audioController.window!.contentView!.layoutSubtreeIfNeeded()
+            try SelfTest.check(audioController.window!.frame.width <= 500 && audioController.window!.frame.height <= 280,"audio card stays compact after first show")
+            guard let play = descendants(audioController.window!.contentView!).compactMap({ $0 as? NSButton }).first(where: { $0.identifier?.rawValue == "AudioPlayback" }) else { throw ShotError("Missing audio Play button") }
+            play.performClick(nil)
+            for _ in 0..<100 where play.title != "Pause" { try await Task.sleep(nanoseconds:20_000_000) }
+            try SelfTest.check(play.title == "Pause","audio Play starts native playback")
+            play.performClick(nil)
+            for _ in 0..<100 where play.title != "Play" { try await Task.sleep(nanoseconds:20_000_000) }
+            try SelfTest.check(play.title == "Play","audio Pause stops native playback")
             try await render(audioController,name:"audio-review",folder:folder)
             board.clearContents(); board.setString("keep clipboard",forType:.string)
             try action(audioController,"Save").performClick(nil); await audioController.saveTask?.value
