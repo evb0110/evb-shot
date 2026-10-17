@@ -7,12 +7,20 @@
 <key>CFBundleDisplayName</key><string>EVB Shot</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.1.2</string>
-<key>CFBundleVersion</key><string>4</string>
+<key>CFBundleShortVersionString</key><string>0.1.3</string>
+<key>CFBundleVersion</key><string>5</string>
 <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Eugene Barsky</string>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
+<key>SUFeedURL</key><string>https://github.com/evb0110/evb-shot/releases/latest/download/appcast.xml</string>
+<key>SUPublicEDKey</key><string>RT2S8Vnin0UHAPIGFNbC1QdiviLxMUwRYzxY5i56/18=</string>
+<key>SUEnableAutomaticChecks</key><true/>
+<key>SUAutomaticallyUpdate</key><false/>
+<key>SUAllowsAutomaticUpdates</key><false/>
+<key>SUVerifyUpdateBeforeExtraction</key><true/>
+<key>SURequireSignedFeed</key><true/>
+<key>SUEnableSystemProfiling</key><false/>
 <key>NSCameraUsageDescription</key><string>Add an optional selfie camera to your screen recording. The camera is off by default.</string>
 <key>NSMicrophoneUsageDescription</key><string>Include your microphone in a recording when you enable it. The microphone is off by default.</string>
 <key>NSScreenCaptureUsageDescription</key><string>Capture screenshots, scrolling images, and screen recordings that you choose.</string>

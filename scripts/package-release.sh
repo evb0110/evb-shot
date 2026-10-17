@@ -12,7 +12,7 @@ if [[ "$(uname -m)" != arm64 ]]; then
 fi
 bash scripts/build-app.sh
 app="$PWD/dist/EVB Shot.app"
-codesign --verify --strict "$app"
+codesign --verify --deep --strict "$app"
 # The public prototype uses an ad-hoc signature. Local Developer ID builds can
 # opt into notarization using an existing notarytool keychain profile.
 if [[ -n "${EVBSHOT_NOTARY_PROFILE:-}" ]]; then
@@ -24,6 +24,13 @@ if [[ -n "${EVBSHOT_NOTARY_PROFILE:-}" ]]; then
     spctl --assess --type execute "$app"
 fi
 mkdir -p dist/release
+# Each appcast must describe only this immutable release. A previous local
+# package is not input to a later release's feed.
+python3 - <<'PY'
+from pathlib import Path
+for name in ['appcast.xml', 'EVB-Shot-macOS-arm64.md']:
+    Path('dist/release', name).unlink(missing_ok=True)
+PY
 archive="$PWD/dist/release/EVB-Shot-macOS-arm64.zip"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
 export EVBSHOT_RELEASE_VERSION="$version"
@@ -36,5 +43,6 @@ receipt = {'product': 'EVB Shot', 'version': os.environ['EVBSHOT_RELEASE_VERSION
            'notarized': bool(os.environ.get('EVBSHOT_NOTARY_PROFILE'))}
 Path('dist/release/build-receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
 PY
+bash scripts/generate-update-feed.sh
 cd dist/release
-shasum -a 256 EVB-Shot-macOS-arm64.zip build-receipt.json > SHA256SUMS
+shasum -a 256 EVB-Shot-macOS-arm64.zip build-receipt.json appcast.xml > SHA256SUMS

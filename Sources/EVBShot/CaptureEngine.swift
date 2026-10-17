@@ -9,6 +9,7 @@ struct CaptureSurface {
     let width: Int
     let height: Int
     let label: String
+    let screenRect: CGRect
 
     func configuration(scale: Double = 1, fps: Int = 30, cursor: Bool = false) -> SCStreamConfiguration {
         let config = SCStreamConfiguration()
@@ -50,7 +51,8 @@ enum CaptureEngine {
             let scale = Double(filter.pointPixelScale)
             return CaptureSurface(filter: filter, sourceRect: nil,
                 width: Int((rect.width * scale).rounded()), height: Int((rect.height * scale).rounded()),
-                label: window.title ?? window.owningApplication?.applicationName ?? "Window")
+                label: window.title ?? window.owningApplication?.applicationName ?? "Window",
+                screenRect: CGRect(x: window.frame.minX, y: (NSScreen.screens.first?.frame.maxY ?? 0)-window.frame.maxY, width: window.frame.width, height: window.frame.height))
         case let .display(id, selection):
             guard let display = content.displays.first(where: { $0.displayID == id }) else {
                 throw ShotError("That display was disconnected. Select an available display.")
@@ -63,7 +65,8 @@ enum CaptureEngine {
             let scale = Double(filter.pointPixelScale)
             return CaptureSurface(filter: filter, sourceRect: selection == nil ? nil : region,
                 width: Int((region.width * scale).rounded()), height: Int((region.height * scale).rounded()),
-                label: selection == nil ? "Full screen" : "Selected area")
+                label: selection == nil ? "Full screen" : "Selected area",
+                screenRect: CGRect(x: display.frame.minX+region.minX, y: (NSScreen.screens.first?.frame.maxY ?? 0)-display.frame.minY-region.maxY, width: region.width, height: region.height))
         }
     }
 
