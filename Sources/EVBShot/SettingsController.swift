@@ -34,6 +34,7 @@ final class SettingsController: NSWindowController, NSWindowDelegate {
             automatic.state = updates.automaticallyChecks ? .on : .off
             let check = NSButton(title:"Check for Updates…",target:updates,action:#selector(AppUpdates.checkForUpdates(_:)))
             check.bezelStyle = .rounded
+            check.bind(.enabled,to:updates.controller.updater,withKeyPath:"canCheckForUpdates",options:nil)
             let row = NSStackView(views:[automatic,check]); row.spacing = 12
             stack.addArrangedSubview(separator); stack.addArrangedSubview(row)
         }

@@ -176,6 +176,14 @@ enum EditorTest {
         let preferences = SettingsController(settings: settings)
         preferences.setSaveFolder(folder.appendingPathComponent("Saved captures - հայերեն",isDirectory:true))
         try SelfTest.check(CaptureSaveSettings(defaults: UserDefaults(suiteName: suite)!).folder == settings.folder, "save folder survives settings reconstruction")
+        let updatePreferences = SettingsController(settings:settings,updates:AppUpdates())
+        updatePreferences.window!.setFrameOrigin(CGPoint(x:-20000,y:-20000)); updatePreferences.showWindow(nil)
+        let updateButtons = updatePreferences.window!.contentView!.subviews.flatMap { view -> [NSView] in
+            @MainActor func children(_ view:NSView) -> [NSView] { [view] + view.subviews.flatMap(children) }
+            return children(view)
+        }.compactMap { $0 as? NSButton }
+        try SelfTest.check(updateButtons.contains { $0.title == "Check for Updates…" && !$0.isEnabled },"Settings disables update checks until Sparkle is ready")
+        try await renderWindow(updatePreferences.window!,name:"update-settings",folder:folder); updatePreferences.close()
         let controller = ResultController(artifact,editingWorkspace:folder.appendingPathComponent("project"),saveSettings:settings,pasteboard:board)
         let canvas = controller.canvas!, document = controller.editDocument!
         let toolbarItems = controller.window!.toolbar!.items
@@ -503,6 +511,17 @@ enum EditorTest {
         try SelfTest.check((bitmap.colorAt(x:480,y:300)?.alphaComponent ?? 1) == 0,"the recording region remains completely clear")
         try SelfTest.check(view.hitTest(CGPoint(x:20,y:20)) == nil && view.hitTest(CGPoint(x:480,y:300)) == nil,"curtain never intercepts input")
         try bitmap.representation(using:.png,properties:[:])!.write(to:folder.appendingPathComponent("recording-curtain.png"))
+        NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep:bitmap)
+        NSColor.white.setFill(); NSBezierPath(rect:view.bounds).fill()
+        let title = "Native recording overlay · generated test content"
+        title.draw(at:CGPoint(x:140,y:440),withAttributes:[.font:NSFont.systemFont(ofSize:22,weight:.semibold),.foregroundColor:NSColor.black])
+        for row in 0..<7 {
+            NSColor(white:0.87,alpha:1).setFill()
+            NSBezierPath(roundedRect:CGRect(x:140,y:CGFloat(385-row*32),width:CGFloat(row%2 == 0 ? 630 : 510),height:10),xRadius:3,yRadius:3).fill()
+        }
+        view.draw(view.bounds)
+        NSGraphicsContext.restoreGraphicsState()
+        try bitmap.representation(using:.png,properties:[:])!.write(to:folder.appendingPathComponent("recording-curtain-fixture.png"))
         print("PASS native recording curtain: transparent capture, outside dimming, neutral frame, click through")
     }
     static func render(_ controller:ResultController,name:String,folder:URL) async throws {

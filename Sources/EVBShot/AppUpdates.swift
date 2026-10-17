@@ -26,7 +26,9 @@ final class AppUpdates: NSObject, SPUUpdaterDelegate, @preconcurrency SPUStandar
         set { controller.updater.automaticallyChecksForUpdates = newValue }
     }
     @objc func checkForUpdates(_ sender: Any?) {
-        guard canCheck else { return }
+        // Sparkle validates active-work restrictions in mayPerform, where an
+        // explicit request can receive the existing busy-state explanation.
+        guard controller.updater.canCheckForUpdates else { return }
         controller.checkForUpdates(sender)
     }
     func activityChanged() {
