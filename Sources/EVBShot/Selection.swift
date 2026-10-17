@@ -6,7 +6,7 @@ final class AreaSelector {
     private var panels: [NSPanel] = []
     private var completion: ((CaptureSource?) -> Void)?
 
-    func select(completion: @escaping (CaptureSource?) -> Void) {
+    func select(title:String = "Drag to select the area to capture", completion: @escaping (CaptureSource?) -> Void) {
         self.completion = completion
         for screen in NSScreen.screens {
             let panel = NSPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -14,6 +14,7 @@ final class AreaSelector {
             panel.level = .screenSaver; panel.hasShadow = false
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             let view = SelectionView(frame: CGRect(origin: .zero, size: screen.frame.size))
+            view.prompt = title
             view.finished = { [weak self] rect in
                 let source = rect.map { selected in
                     CaptureSource.display(screen.displayID,
@@ -39,6 +40,7 @@ final class AreaSelector {
 
 private final class SelectionView: NSView {
     var finished: ((CGRect?) -> Void)?
+    var prompt = "Drag to select the area to capture"
     private var anchor: CGPoint?
     private var rectangle: CGRect?
     override var acceptsFirstResponder: Bool { true }
@@ -65,7 +67,7 @@ private final class SelectionView: NSView {
             let text = "\(Int(rectangle.width)) × \(Int(rectangle.height)) points"
             text.draw(at: CGPoint(x: rectangle.minX + 8, y: rectangle.maxY + 8), withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold), .foregroundColor: NSColor.white])
         }
-        let title = "Drag to select the area to capture"
+        let title = prompt
         title.draw(at: CGPoint(x: bounds.midX - 145, y: bounds.height - 55), withAttributes: [.font: NSFont.systemFont(ofSize: 18, weight: .semibold), .foregroundColor: NSColor.white])
     }
     override func mouseDown(with event: NSEvent) { anchor = convert(event.locationInWindow, from: nil) }

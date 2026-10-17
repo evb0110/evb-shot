@@ -7,7 +7,7 @@ import CoreText
 enum SelfTest {
     // A short, silent live smoke. Private desktop pixels are deleted after validation.
     static func captureSmoke(folder: URL) async throws {
-        guard CGPreflightScreenCaptureAccess() else { throw ShotError("Enable EVBShot screen capture access in macOS Privacy & Security, then rerun this check.") }
+        guard CGPreflightScreenCaptureAccess() else { throw ShotError("Enable EVB Shot screen capture access in macOS Privacy & Security, then rerun this check.") }
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let id = CGMainDisplayID()
         let content = try await CaptureEngine.content()
@@ -260,6 +260,7 @@ enum SelfTest {
         try check(abs(filmRate-24) < 0.01,"selected 24 FPS is retained in the encoded video")
         try CaptureFiles.atomicCopy(from:filmArtifact.url,to:folder.appendingPathComponent("24-fps.mov"))
         print("PASS 320×180 recording at 24 FPS with 48 native-timestamped frames")
+        try await EditorTest.mediaResults(video:artifact,audio:audioArtifact,folder:folder)
     }
     @MainActor static func save(folder: URL) async throws {
         let board = NSPasteboard(name: NSPasteboard.Name("com.evb.shot.test.\(UUID().uuidString)"))

@@ -60,7 +60,7 @@ final class RecordingSession: NSObject, SCStreamOutput, SCStreamDelegate, @unche
         }
         if options.microphone {
             guard await AVCaptureDevice.requestAccess(for: .audio) else {
-                throw ShotError("Microphone access is off. Enable EVBShot in System Settings → Privacy & Security → Microphone.")
+                throw ShotError("Microphone access is off. Enable EVB Shot in System Settings → Privacy & Security → Microphone.")
             }
         }
         if let device = options.camera, !options.audioOnly {
