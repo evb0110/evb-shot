@@ -32,6 +32,7 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
     private var startedAt:Date?
     private var selectionBounds:CGRect?
     private var regionOutline:NSPanel?
+    let recordingOverlay: RecordingOverlay
     private var pendingFailure:Error?
     private var initialSelection = false
     var onFinish:((CaptureArtifact)->Void)?
@@ -41,7 +42,8 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
     var isRecording:Bool { phase == .recording }
     var hasActiveWork:Bool { phase == .preparing || phase == .recording || phase == .finishing }
 
-    init(display:CGDirectDisplayID) {
+    init(display:CGDirectDisplayID, overlayPresentation:RecordingOverlay.Presentation = .desktop) {
+        recordingOverlay = RecordingOverlay(presentation:overlayPresentation)
         source = .display(display,nil)
         let panel = NSPanel(contentRect:CGRect(x:0,y:0,width:520,height:190),styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
         panel.title = "Record with EVB Shot"; panel.isReleasedWhenClosed = false
@@ -223,6 +225,11 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
                 options.audioOnly = audioOnly.state == .on
                 if !options.audioOnly, camera.state == .on, cameraDevices.indices.contains(devices.indexOfSelectedItem) { options.camera = cameraDevices[devices.indexOfSelectedItem] }
                 options.corner = CameraCorner.allCases[corner.indexOfSelectedItem]
+                if !options.audioOnly {
+                    let windowID:CGWindowID? = { if case let .window(id) = source { return id }; return nil }()
+                    recordingOverlay.onStop = { [weak self] in self?.stop() }
+                    recordingOverlay.show(region:surface.screenRect,windowID:windowID)
+                }
                 let recording = RecordingSession(); session = recording
                 recording.onFailure = { [weak self] error in
                     guard let self else { return }
@@ -231,12 +238,14 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
                 }
                 try await recording.start(surface:surface,options:options)
                 phase = .recording; startedAt = Date(); onState?(true); onElapsed?("00:00")
+                recordingOverlay.didStart()
                 if pendingFailure != nil { stop(); return }
                 timer = Timer.scheduledTimer(withTimeInterval:1,repeats:true) { [weak self] _ in
                     Task { @MainActor in
                         guard let self, self.phase == .recording, let start = self.startedAt else { return }
                         let elapsed = Int(Date().timeIntervalSince(start))
-                        self.onElapsed?(String(format:"%02d:%02d",elapsed/60,elapsed%60))
+                        let time = String(format:"%02d:%02d",elapsed/60,elapsed%60)
+                        self.onElapsed?(time); self.recordingOverlay.updateElapsed(time)
                     }
                 }
             } catch { session = nil; restoreAfterFailure(error) }
@@ -245,17 +254,19 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
     func stop() {
         guard let session, phase == .recording else { return }
         phase = .finishing; timer?.invalidate(); timer = nil
+        recordingOverlay.hide()
         onElapsed?("Saving…")
         Task { [self] in
             do {
                 var artifact = try await session.stop()
                 if let pendingFailure { artifact.notice = "Recording ended early: \(pendingFailure.localizedDescription)" }
                 self.session = nil; phase = .closed; onState?(false)
-                close(); onFinish?(artifact)
+                onFinish?(artifact); close()
             } catch { self.session = nil; restoreAfterFailure(error) }
         }
     }
     private func restoreAfterFailure(_ error:Error) {
+        recordingOverlay.hide()
         phase = .configuring; timer?.invalidate(); timer = nil
         onState?(false); configurationViews.forEach { $0.isEnabled = true }; cancelButton.isEnabled = true
         updateOptions(); status.stringValue = error.localizedDescription
@@ -263,7 +274,7 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
     }
     @objc private func cancel() { guard !hasActiveWork else { return }; phase = .closed; close() }
     func windowShouldClose(_ sender:NSWindow) -> Bool { !hasActiveWork }
-    func windowWillClose(_ notification:Notification) { phase = .closed; regionOutline?.orderOut(nil); regionOutline = nil; timer?.invalidate(); timer = nil; onClose?() }
+    func windowWillClose(_ notification:Notification) { phase = .closed; recordingOverlay.hide(); regionOutline?.orderOut(nil); regionOutline = nil; timer?.invalidate(); timer = nil; onClose?() }
 }
 
 private final class RecordingRegionView:NSView {

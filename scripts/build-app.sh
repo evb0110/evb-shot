@@ -12,11 +12,27 @@ cp Resources/Info.plist "$app_path/Contents/Info.plist"
 cp LICENSE "$app_path/Contents/Resources/LICENSE.txt"
 cp Resources/libpng-LICENSE.txt "$app_path/Contents/Resources/libpng-LICENSE.txt"
 cp Resources/AppIcon.icns "$app_path/Contents/Resources/AppIcon.icns"
+# SwiftPM links a binary framework but does not embed it in our hand-built app.
+framework="$PWD/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+[[ -d "$framework" ]] || { printf 'Missing resolved Sparkle framework: %s\n' "$framework" >&2; exit 1; }
+mkdir -p "$app_path/Contents/Frameworks"
+ditto "$framework" "$app_path/Contents/Frameworks/Sparkle.framework"
+cp .build/artifacts/sparkle/Sparkle/LICENSE "$app_path/Contents/Resources/Sparkle-LICENSE.txt"
 signing_identity="${EVBSHOT_SIGN_IDENTITY:--}"
+sparkle="$app_path/Contents/Frameworks/Sparkle.framework"
+# Sign inside out, including Sparkle's standalone helper. Developer ID builds
+# must give the framework the host's identity for hardened library validation.
+for component in "$sparkle/Versions/B/Autoupdate" "$sparkle/Versions/B/Updater.app" "$sparkle/Versions/B/XPCServices/Downloader.xpc" "$sparkle/Versions/B/XPCServices/Installer.xpc" "$sparkle"; do
+    if [[ "$signing_identity" == "-" ]]; then
+        codesign --force --sign - "$component"
+    else
+        codesign --force --options runtime --timestamp --sign "$signing_identity" "$component"
+    fi
+done
 if [[ "$signing_identity" == "-" ]]; then
     codesign --force --sign - --entitlements Resources/EVBShot.entitlements "$app_path"
 else
     codesign --force --options runtime --timestamp --entitlements Resources/EVBShot.entitlements --sign "$signing_identity" "$app_path"
 fi
-codesign --verify --strict "$app_path"
+codesign --verify --deep --strict "$app_path"
 printf '%s\n' "$app_path"

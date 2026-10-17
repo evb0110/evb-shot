@@ -12,7 +12,7 @@ enum StatusIcon {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var statusItem: NSStatusItem!
     private let selector = AreaSelector()
     private var picker: WindowPicker?
@@ -23,13 +23,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private weak var aboutWindow: NSWindow?
     private var closeObserver: NSObjectProtocol?
     private var busy = false
+    private let updates = AppUpdates()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         if let icon = Bundle.main.image(forResource:"AppIcon") { NSApp.applicationIconImage = icon }
+        updates.isBusy = { [weak self] in
+            guard let self else { return false }
+            return self.busy || self.recording != nil || self.scrolling != nil || !self.results.isEmpty
+        }
+        updates.onChange = { [weak self] in if self?.statusItem != nil { self?.rebuildMenu() } }
         let mainMenu = NSMenu(), appItem = NSMenuItem(), appMenu = NSMenu()
         appMenu.addItem(item("About EVB Shot",#selector(about),symbol:"info.circle"))
         appMenu.addItem(item("Settings…",#selector(showSettings),symbol:"gearshape"))
+        appMenu.addItem(item("Check for Updates…",#selector(checkForUpdates),symbol:"arrow.triangle.2.circlepath"))
         appMenu.addItem(.separator()); appMenu.addItem(item("Quit EVB Shot",#selector(quit),symbol:"power"))
         appItem.submenu = appMenu; mainMenu.addItem(appItem); NSApp.mainMenu = mainMenu
         closeObserver = NotificationCenter.default.addObserver(forName:NSWindow.willCloseNotification,object:nil,queue:.main) { [weak self] note in
@@ -42,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.imagePosition = .imageOnly
         statusItem.button?.image = StatusIcon.image()
         rebuildMenu()
+        updates.start()
         if CommandLine.arguments.contains("--show-recorder") { showRecorder() }
         for index in CommandLine.arguments.indices where CommandLine.arguments[index] == "--show-capture" && CommandLine.arguments.indices.contains(index + 1) {
             do {
@@ -64,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
     private func updateActivationPolicy() {
+        updates.activityChanged()
         let hasWorkspace = !results.isEmpty || recording != nil || picker != nil || aboutWindow != nil || settings != nil
         NSApp.setActivationPolicy(hasWorkspace ? .regular : .accessory)
     }
@@ -89,10 +98,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(item("Open Drafts Folder", #selector(openDrafts),symbol:"tray.full"))
         menu.addItem(item("Settings…", #selector(showSettings),symbol:"gearshape"))
         menu.addItem(item("About EVB Shot", #selector(about),symbol:"info.circle"))
+        let update = item(updates.updateAvailable ? "Update Available…" : "Check for Updates…",#selector(checkForUpdates),symbol:"arrow.triangle.2.circlepath")
+        update.isEnabled = updates.canCheck; menu.addItem(update)
         let quit = item("Quit EVB Shot", #selector(quit),symbol:"power"); quit.isEnabled = !busy; menu.addItem(quit)
         statusItem.menu = menu
     }
-    private func setBusy(_ value: Bool) { busy = value; rebuildMenu() }
+    private func setBusy(_ value: Bool) { busy = value; rebuildMenu(); updates.activityChanged() }
+    @objc private func checkForUpdates() { updates.checkForUpdates(nil) }
+    func validateMenuItem(_ menuItem:NSMenuItem) -> Bool {
+        menuItem.action == #selector(checkForUpdates) ? updates.canCheck : true
+    }
     @objc private func captureFull() { capture(.display(NSScreen.underPointer.displayID, nil)) }
     @objc private func captureArea() {
         setBusy(true)
@@ -131,7 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 do {
                     let spool = try LongCapture(folder: CaptureFiles.newSession())
                     let controller = ScrollController(source: source, spool: spool) { [weak self] artifact in
-                        self?.scrolling = nil; self?.setBusy(false); self?.showResult(artifact)
+                        self?.showResult(artifact); self?.scrolling = nil; self?.setBusy(false)
                     }
                     controller.onCancel = { [weak self] in self?.scrolling = nil; self?.setBusy(false) }
                     self.scrolling = controller; controller.start()
@@ -183,7 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc private func showSettings() {
         if settings == nil {
-            let controller = SettingsController()
+            let controller = SettingsController(updates:updates)
             controller.onClose = { [weak self] in self?.settings = nil; self?.updateActivationPolicy() }
             settings = controller
         }
@@ -195,6 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         credits.append(NSAttributedString(string:"Source code",attributes:[.link:URL(string:"https://github.com/evb0110/evb-shot")!]))
         credits.append(NSAttributedString(string:"  ·  "))
         if let license = Bundle.main.url(forResource:"libpng-LICENSE",withExtension:"txt") { credits.append(NSAttributedString(string:"libpng license",attributes:[.link:license])) }
+        if let license = Bundle.main.url(forResource:"Sparkle-LICENSE",withExtension:"txt") { credits.append(NSAttributedString(string:"  ·  Sparkle license",attributes:[.link:license])) }
         NSApp.orderFrontStandardAboutPanel(options:[.applicationName:"EVB Shot",.applicationVersion:Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "0.1.0",.version:"Beta",.credits:credits,.applicationIcon:NSApp.applicationIconImage!])
         aboutWindow = NSApp.keyWindow; aboutWindow?.hidesOnDeactivate = false
         updateActivationPolicy(); NSApp.activate(ignoringOtherApps:true)

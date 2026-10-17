@@ -4,11 +4,14 @@ import AppKit
 final class SettingsController: NSWindowController, NSWindowDelegate {
     private let settings: CaptureSaveSettings
     private let path = NSPathControl()
+    private let updates: AppUpdates?
     var onClose: (() -> Void)?
 
-    init(settings: CaptureSaveSettings = CaptureSaveSettings()) {
+    init(settings: CaptureSaveSettings = CaptureSaveSettings(), updates: AppUpdates? = nil) {
         self.settings = settings
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 480, height: 190),
+        self.updates = updates
+        let height:CGFloat = updates == nil ? 190 : 280
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 480, height: height),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "Settings"; window.isReleasedWhenClosed = false; window.hidesOnDeactivate = false
         super.init(window: window); window.delegate = self
@@ -25,6 +28,16 @@ final class SettingsController: NSWindowController, NSWindowDelegate {
         reset.bezelStyle = .rounded
         let buttons = NSStackView(views: [choose, reset]); buttons.spacing = 8
         let stack = NSStackView(views: [title, detail, path, buttons])
+        if let updates {
+            let separator = NSBox(); separator.boxType = .separator
+            let automatic = NSButton(checkboxWithTitle:"Automatically check for updates",target:self,action:#selector(changeAutomaticChecks))
+            automatic.state = updates.automaticallyChecks ? .on : .off
+            let check = NSButton(title:"Check for Updates…",target:updates,action:#selector(AppUpdates.checkForUpdates(_:)))
+            check.bezelStyle = .rounded
+            check.bind(.enabled,to:updates.controller.updater,withKeyPath:"canCheckForUpdates",options:nil)
+            let row = NSStackView(views:[automatic,check]); row.spacing = 12
+            stack.addArrangedSubview(separator); stack.addArrangedSubview(row)
+        }
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
         let content = window.contentView!
@@ -35,7 +48,7 @@ final class SettingsController: NSWindowController, NSWindowDelegate {
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
             path.widthAnchor.constraint(equalTo: stack.widthAnchor),
             content.widthAnchor.constraint(equalToConstant: 480),
-            content.heightAnchor.constraint(equalToConstant: 190)
+            content.heightAnchor.constraint(equalToConstant: height)
         ])
         window.center()
     }
@@ -50,6 +63,7 @@ final class SettingsController: NSWindowController, NSWindowDelegate {
             path.pathItems.last?.image = NSImage(named: NSImage.folderName)
         }
     }
+    @objc private func changeAutomaticChecks(_ sender:NSButton) { updates?.automaticallyChecks = sender.state == .on }
     @objc private func resetFolder() { setSaveFolder(CaptureSaveSettings.defaultFolder) }
     @objc private func chooseFolder() {
         guard let window else { return }

@@ -9,12 +9,14 @@ let package = Package(
     name: "EVBShot",
     platforms: [.macOS(.v15)],
     products: [.executable(name: "EVBShot", targets: ["EVBShot"])],
+    dependencies: [.package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0")],
     targets: [
         .target(name: "PixelCore", cSettings: [.unsafeFlags(["-I\(pngPrefix)/include"])],
                 linkerSettings: [.unsafeFlags(["\(pngPrefix)/lib/libpng16.a"]), .linkedLibrary("z")]),
-        .executableTarget(name: "EVBShot", dependencies: ["PixelCore"],
+        .executableTarget(name: "EVBShot", dependencies: ["PixelCore", .product(name: "Sparkle", package: "Sparkle")],
             linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("ScreenCaptureKit"),
-                             .linkedFramework("AVFoundation"), .linkedFramework("CoreImage")])
+                             .linkedFramework("AVFoundation"), .linkedFramework("CoreImage"),
+                             .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])])
     ],
     swiftLanguageModes: [.v5]
 )

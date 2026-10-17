@@ -8,9 +8,12 @@ enum EditorTest {
     static func recordingWorkflow(folder:URL) async throws {
         guard CGPreflightScreenCaptureAccess() else { throw ShotError("Recording workflow test requires existing screen capture permission.") }
         try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
-        let recorder = RecordingController(display:CGMainDisplayID())
+        let recorder = RecordingController(display:CGMainDisplayID(),overlayPresentation:.offscreen)
         let region = CaptureSource.display(CGMainDisplayID(),CGRect(x:80,y:100,width:640,height:360))
         let expected = try await CaptureEngine.surface(for:region)
+        if #available(macOS 15.2, *) {
+            try SelfTest.check(!expected.filter.includedApplications.contains { $0.processID == ProcessInfo.processInfo.processIdentifier },"ScreenCaptureKit excludes this process, including recording curtains and controls")
+        }
         recorder.acceptSelection(region,present:false)
         try SelfTest.check(recorder.selectedSourceIndex == 1,"actual selected recording region highlights Area")
         recorder.window!.setFrameOrigin(CGPoint(x:-20000,y:-20000))
@@ -27,8 +30,15 @@ enum EditorTest {
         try SelfTest.check(!recorder.window!.isVisible,"recording setup must disappear when Start is pressed")
         recorder.showWindow(nil)
         try SelfTest.check(!recorder.window!.isVisible,"app switching cannot reopen configuration during recording")
+        let boundaries = NSApp.windows.filter { $0.identifier?.rawValue == "RecordingBoundary" }
+        try SelfTest.check(boundaries.count == NSScreen.screens.count,"recording retains a frame and outside dimming on every display")
+        try SelfTest.check(recorder.recordingOverlay.region == expected.screenRect,"the clear recording region matches the actual native capture geometry")
+        try SelfTest.check(boundaries.allSatisfy { $0.isVisible && $0.ignoresMouseEvents && !$0.hidesOnDeactivate && $0.frame.maxX < -10000 },"curtains pass clicks through, survive app switching, and tests remain offscreen")
         try await Task.sleep(nanoseconds:700_000_000)
-        recorder.stop()
+        guard let overlayControls = recorder.recordingOverlay.controls,
+              let stop = descendants(overlayControls.contentView!).compactMap({ $0 as? NSButton }).first(where: { $0.title == "Stop" }) else { throw ShotError("Recording needs a visible Stop control") }
+        stop.performClick(nil)
+        try SelfTest.check(recorder.recordingOverlay.panels.isEmpty && recorder.recordingOverlay.controls == nil,"Stop removes every curtain and the control bar immediately")
         for _ in 0..<100 where result == nil { try await Task.sleep(nanoseconds:100_000_000) }
         guard let result else { throw ShotError("Stop must produce the recording without reopening setup") }
         try SelfTest.check(result.width == expected.width && result.height == expected.height && !result.hasAudio,"selected area geometry is retained and audio stays off")
@@ -141,6 +151,8 @@ enum EditorTest {
     static func run(folder: URL) async throws {
         try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
         try statusIcon(folder:folder)
+        try recordingCurtain(folder:folder)
+        try AppUpdates.verifyLifecycle()
         try await retinaRendering(folder:folder)
         let width = 640, height = 480
         var rgba = Data(count:width*height*4)
@@ -164,6 +176,14 @@ enum EditorTest {
         let preferences = SettingsController(settings: settings)
         preferences.setSaveFolder(folder.appendingPathComponent("Saved captures - հայերեն",isDirectory:true))
         try SelfTest.check(CaptureSaveSettings(defaults: UserDefaults(suiteName: suite)!).folder == settings.folder, "save folder survives settings reconstruction")
+        let updatePreferences = SettingsController(settings:settings,updates:AppUpdates())
+        updatePreferences.window!.setFrameOrigin(CGPoint(x:-20000,y:-20000)); updatePreferences.showWindow(nil)
+        let updateButtons = updatePreferences.window!.contentView!.subviews.flatMap { view -> [NSView] in
+            @MainActor func children(_ view:NSView) -> [NSView] { [view] + view.subviews.flatMap(children) }
+            return children(view)
+        }.compactMap { $0 as? NSButton }
+        try SelfTest.check(updateButtons.contains { $0.title == "Check for Updates…" && !$0.isEnabled },"Settings disables update checks until Sparkle is ready")
+        try await renderWindow(updatePreferences.window!,name:"update-settings",folder:folder); updatePreferences.close()
         let controller = ResultController(artifact,editingWorkspace:folder.appendingPathComponent("project"),saveSettings:settings,pasteboard:board)
         let canvas = controller.canvas!, document = controller.editDocument!
         let toolbarItems = controller.window!.toolbar!.items
@@ -310,7 +330,7 @@ enum EditorTest {
         let changed = try ImageEditDocument(source:versioned,width:width,height:height,workspace:project)
         try SelfTest.check(!changed.hasEdits,"replacing a source does not reapply stale annotations")
         print("PASS transparent/translucent native pixels, save and copy edited image path, source-version guard")
-        let recorder = RecordingController(display:CGMainDisplayID())
+        let recorder = RecordingController(display:CGMainDisplayID(),overlayPresentation:.offscreen)
         func descendants(_ view:NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
         guard let fps = descendants(recorder.window!.contentView!).compactMap({ $0 as? NSPopUpButton }).first(where:{ $0.itemTitles.contains("24 FPS") }) else { throw ShotError("Recording UI must expose 24 FPS") }
         try SelfTest.check(recorder.selectedFrameRate == 30,"default frame rate remains 30 FPS")
@@ -479,6 +499,32 @@ enum EditorTest {
         view.layoutSubtreeIfNeeded(); let bitmap = view.bitmapImageRepForCachingDisplay(in:view.bounds)!
         view.cacheDisplay(in:view.bounds,to:bitmap)
         try bitmap.representation(using:.png,properties:[:])!.write(to:folder.appendingPathComponent("recording-controls.png"))
+    }
+    static func recordingCurtain(folder:URL) throws {
+        let view = RecordingCurtainView(frame:CGRect(x:0,y:0,width:960,height:600))
+        view.region = CGRect(x:100,y:100,width:760,height:400)
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:960,pixelsHigh:600,bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:960*4,bitsPerPixel:32)!
+        // Nonzero memory makes a missing clear fail deterministically.
+        bitmap.bitmapData!.update(repeating:255,count:bitmap.bytesPerRow*bitmap.pixelsHigh)
+        NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep:bitmap)
+        NSGraphicsContext.current!.cgContext.clear(view.bounds); view.draw(view.bounds)
+        NSGraphicsContext.restoreGraphicsState()
+        try SelfTest.check((bitmap.colorAt(x:20,y:20)?.alphaComponent ?? 0) > 0.35,"curtain darkens outside the recording region")
+        try SelfTest.check((bitmap.colorAt(x:480,y:300)?.alphaComponent ?? 1) == 0,"the recording region remains completely clear")
+        try SelfTest.check(view.hitTest(CGPoint(x:20,y:20)) == nil && view.hitTest(CGPoint(x:480,y:300)) == nil,"curtain never intercepts input")
+        try bitmap.representation(using:.png,properties:[:])!.write(to:folder.appendingPathComponent("recording-curtain.png"))
+        NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep:bitmap)
+        NSColor.white.setFill(); NSBezierPath(rect:view.bounds).fill()
+        let title = "Native recording overlay · generated test content"
+        title.draw(at:CGPoint(x:140,y:440),withAttributes:[.font:NSFont.systemFont(ofSize:22,weight:.semibold),.foregroundColor:NSColor.black])
+        for row in 0..<7 {
+            NSColor(white:0.87,alpha:1).setFill()
+            NSBezierPath(roundedRect:CGRect(x:140,y:CGFloat(385-row*32),width:CGFloat(row%2 == 0 ? 630 : 510),height:10),xRadius:3,yRadius:3).fill()
+        }
+        view.draw(view.bounds)
+        NSGraphicsContext.restoreGraphicsState()
+        try bitmap.representation(using:.png,properties:[:])!.write(to:folder.appendingPathComponent("recording-curtain-fixture.png"))
+        print("PASS native recording curtain: transparent capture, outside dimming, neutral frame, click through")
     }
     static func render(_ controller:ResultController,name:String,folder:URL) async throws {
         try await renderWindow(controller.window!,name:name,folder:folder)
