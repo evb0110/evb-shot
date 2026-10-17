@@ -111,6 +111,22 @@ final class ImageEditDocument {
            saved.fingerprint == fingerprint, !saved.state.crop.isEmpty, initial.crop.contains(saved.state.crop) { state = saved.state }
         history.groupsByEvent = false
         pixels = ImagePixelStore(source: source, width: width, height: height, workspace: self.workspace)
+        // Reopened editable drafts retain useful undo: each restored object and
+        // the final crop can be removed without changing the source bitmap.
+        var previous = initial
+        for mark in state.marks {
+            let snapshot = previous
+            history.beginUndoGrouping()
+            history.registerUndo(withTarget:self) { $0.change(snapshot,name:"Add annotation") }
+            history.setActionName("Add annotation"); history.endUndoGrouping()
+            previous.marks.append(mark)
+        }
+        if state.crop != initial.crop {
+            let snapshot = previous
+            history.beginUndoGrouping()
+            history.registerUndo(withTarget:self) { $0.change(snapshot,name:"Crop") }
+            history.setActionName("Crop"); history.endUndoGrouping()
+        }
     }
     var hasEdits: Bool { state != initial }
     func change(_ value: ImageEditState, name: String) {

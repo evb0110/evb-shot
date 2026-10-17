@@ -33,8 +33,36 @@ enum EditorTest {
             canvas.continueGesture(at:canvas.pointInView(end)); canvas.endGesture(at:canvas.pointInView(end))
         }
         drag(.arrow,CGPoint(x:100,y:100),CGPoint(x:240,y:180))
+        try await render(controller,name:"selected-arrow",folder:folder)
+        let arrowBitmap = canvas.bitmapImageRepForCachingDisplay(in:canvas.bounds)!
+        canvas.cacheDisplay(in:canvas.bounds,to:arrowBitmap)
+        let arrowPixels = try PixelFrame(image:arrowBitmap.cgImage!)
+        let bluePixels = arrowPixels.rgba.withUnsafeBytes { data -> Int in
+            let bytes = data.bindMemory(to:UInt8.self)
+            return stride(from:0,to:bytes.count,by:4).filter { bytes[$0] < 80 && bytes[$0+1] > 80 && bytes[$0+1] < 210 && bytes[$0+2] > 220 }.count
+        }
+        func shortcut(_ redo:Bool, modifiers:NSEvent.ModifierFlags? = nil) -> Bool {
+            let flags = modifiers ?? (redo ? [.command,.shift] : [.command])
+            let event = NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:flags,timestamp:0,windowNumber:controller.window!.windowNumber,context:nil,characters:redo ? "Z" : "z",charactersIgnoringModifiers:"z",isARepeat:false,keyCode:6)!
+            return controller.window!.performKeyEquivalent(with:event)
+        }
+        let handledUndo = shortcut(false), undoCount = document.state.marks.count
+        let handledRedo = shortcut(true), redoCount = document.state.marks.count
+        print("EDITOR REGRESSION arrow blue pixels=\(bluePixels); Cmd-Z handled=\(handledUndo) marks=\(undoCount); Shift-Cmd-Z handled=\(handledRedo) marks=\(redoCount)")
+        try SelfTest.check(handledUndo && undoCount == 0 && handledRedo && redoCount == 1,"window key equivalents must undo and redo the arrow")
+        try SelfTest.check(bluePixels < 400,"selected arrow must have only endpoint handles, no blue bounding box")
+        let beforeUnrelated = document.state
+        _ = shortcut(false,modifiers:[.command,.option])
+        try SelfTest.check(document.state == beforeUnrelated,"other modifier combinations must not invoke undo")
         drag(.rectangle,CGPoint(x:300,y:100),CGPoint(x:480,y:260))
-        canvas.setTool(.text); canvas.beginGesture(at:canvas.pointInView(CGPoint(x:90,y:320))); canvas.commitText("Native pixels")
+        canvas.setTool(.text); canvas.beginGesture(at:canvas.pointInView(CGPoint(x:90,y:320)))
+        guard let fieldEditor = controller.window!.firstResponder as? NSTextView, fieldEditor.isFieldEditor else { throw ShotError("Annotation text must use the native field editor") }
+        fieldEditor.insertText("Native pixels",replacementRange:NSRange(location:NSNotFound,length:0))
+        _ = shortcut(false)
+        try SelfTest.check(fieldEditor.string.isEmpty && document.state.marks.count == 2,"Cmd-Z while typing undoes text, preserving image annotations")
+        _ = shortcut(true)
+        try SelfTest.check(fieldEditor.string == "Native pixels","Shift-Cmd-Z restores typed text")
+        canvas.commitText()
         try SelfTest.check(document.state.marks.count == 3,"text/arrow/rectangle mouse routes")
         canvas.beginGesture(at:canvas.pointInView(CGPoint(x:100,y:330)),clickCount:2); canvas.commitText("Edited label")
         try SelfTest.check(document.state.marks[2].text == "Edited label","double-click edits existing text")
@@ -74,6 +102,10 @@ enum EditorTest {
         try SelfTest.check(pixel(10,10) == Array(rgba[baseOffset..<baseOffset+4]),"unmarked pixels are unchanged after crop")
         let restored = try ImageEditDocument(source:source,width:width,height:height,workspace:folder.appendingPathComponent("project"))
         try SelfTest.check(restored.state == document.state,"editable objects and crop survive reopening")
+        restored.history.undo(); try SelfTest.check(restored.state.crop.width == 640 && restored.state.marks.count == 3,"reopened draft can undo its crop")
+        restored.history.undo(); try SelfTest.check(restored.state.marks.count == 2,"reopened draft can undo restored annotations")
+        restored.history.redo(); restored.history.redo()
+        try SelfTest.check(restored.state == document.state,"reopened draft redo restores exact objects and crop")
         let retained = try Data(contentsOf:source); try SelfTest.check(retained == original,"original file remains byte-identical")
         try await render(controller,name:"editor",folder:folder)
         canvas.setTool(.crop)
@@ -92,6 +124,47 @@ enum EditorTest {
         let changed = try ImageEditDocument(source:versioned,width:width,height:height,workspace:project)
         try SelfTest.check(!changed.hasEdits,"replacing a source does not reapply stale annotations")
         print("PASS transparent/translucent native pixels, save and copy edited image path, source-version guard")
+        let recorder = RecordingController(display:CGMainDisplayID())
+        func descendants(_ view:NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        guard let fps = descendants(recorder.window!.contentView!).compactMap({ $0 as? NSPopUpButton }).first(where:{ $0.itemTitles.contains("24 FPS") }) else { throw ShotError("Recording UI must expose 24 FPS") }
+        try SelfTest.check(recorder.selectedFrameRate == 30,"default frame rate remains 30 FPS")
+        fps.selectItem(withTitle:"24 FPS"); try SelfTest.check(recorder.selectedFrameRate == 24,"24 FPS popup maps to the recording configuration")
+        try await renderRecorder(recorder,folder:folder)
+        recorder.close()
+        let scrollFolder = folder.appendingPathComponent("scroll-panel")
+        try FileManager.default.createDirectory(at:scrollFolder,withIntermediateDirectories:true)
+        let spool = try LongCapture(folder:scrollFolder)
+        let scroll = ScrollController(source:.display(CGMainDisplayID(),CGRect(x:100,y:100,width:600,height:400)),spool:spool) { _ in }
+        try SelfTest.check(scroll.window!.hidesOnDeactivate == false && scroll.window!.styleMask.contains(.nonactivatingPanel),"scroll controls remain available without stealing focus")
+        let firstFrame = try SelfTest.fixture(width:401,height:512,start:0)
+        func cgImage(_ frame:PixelFrame) -> CGImage {
+            CGImage(width:frame.width,height:frame.height,bitsPerComponent:8,bitsPerPixel:32,bytesPerRow:frame.width*4,space:CGColorSpace(name:CGColorSpace.sRGB)!,bitmapInfo:CGBitmapInfo(rawValue:CGImageAlphaInfo.premultipliedLast.rawValue),provider:CGDataProvider(data:frame.rgba as CFData)!,decode:nil,shouldInterpolate:false,intent:.defaultIntent)!
+        }
+        await scroll.receive(cgImage(firstFrame))
+        var flash = firstFrame.rgba
+        flash.withUnsafeMutableBytes { raw in
+            let bytes = raw.bindMemory(to:UInt8.self)
+            for y in 30..<190 { for x in 150..<310 where hypot(Double(x-230),Double(y-110)) < 80 {
+                let offset = (y*401+x)*4; bytes[offset] = 255; bytes[offset+1] = 50; bytes[offset+2] = 30
+            } }
+        }
+        await scroll.receive(cgImage(try PixelFrame(width:401,height:512,rgba:flash)))
+        let afterFlash = await spool.dimensions()
+        try SelfTest.check(!scroll.isPaused && afterFlash.1 == 512,"a click highlight or animated frame must not freeze scrolling capture or commit uncertain pixels")
+        await scroll.receive(cgImage(try SelfTest.fixture(width:401,height:512,start:173)))
+        let recovered = await spool.dimensions()
+        let recoveredPixels = try Data(contentsOf:spool.rawURL)
+        try SelfTest.check(!scroll.isPaused && recovered.1 == 685,"scrolling automatically continues when a valid overlapping frame arrives")
+        let expectedPixels = try SelfTest.fixture(width:401,height:685,start:0).rgba
+        try SelfTest.check(recoveredPixels == expectedPixels,"continuous scrolling recovery retains every original native pixel")
+        scroll.close()
+        print("PASS actual 24 FPS popup mapping, nonactivating scrolling panel, animation rejection followed by automatic pixel-exact scroll recovery through the live frame receiver")
+    }
+    static func renderRecorder(_ recorder:RecordingController,folder:URL) async throws {
+        let view = recorder.window!.contentView!.superview!
+        view.layoutSubtreeIfNeeded(); let bitmap = view.bitmapImageRepForCachingDisplay(in:view.bounds)!
+        view.cacheDisplay(in:view.bounds,to:bitmap)
+        try bitmap.representation(using:.png,properties:[:])!.write(to:folder.appendingPathComponent("recording-controls.png"))
     }
     static func render(_ controller:ResultController,name:String,folder:URL) async throws {
         guard let view = controller.window?.contentView?.superview else { throw ShotError("Missing editor frame") }

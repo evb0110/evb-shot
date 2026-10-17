@@ -9,15 +9,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var scrolling: ScrollController?
     private var recording: RecordingController?
     private var results: [ResultController] = []
+    private weak var aboutWindow: NSWindow?
+    private var closeObserver: NSObjectProtocol?
     private var busy = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        if let icon = Bundle.main.image(forResource:"AppIcon") { NSApp.applicationIconImage = icon }
+        let mainMenu = NSMenu(), appItem = NSMenuItem(), appMenu = NSMenu()
+        appMenu.addItem(item("About EVBShot",#selector(about),symbol:"info.circle"))
+        appMenu.addItem(.separator()); appMenu.addItem(item("Quit EVBShot",#selector(quit),symbol:"power"))
+        appItem.submenu = appMenu; mainMenu.addItem(appItem); NSApp.mainMenu = mainMenu
+        closeObserver = NotificationCenter.default.addObserver(forName:NSWindow.willCloseNotification,object:nil,queue:.main) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let self, let window = note.object as? NSWindow, window === self.aboutWindow else { return }
+                self.aboutWindow = nil; self.updateActivationPolicy()
+            }
+        }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "viewfinder.circle.fill", accessibilityDescription: "EVBShot")
         rebuildMenu()
         if CommandLine.arguments.contains("--show-recorder") { showRecorder() }
-        if let index = CommandLine.arguments.firstIndex(of: "--show-capture"), CommandLine.arguments.indices.contains(index + 1) {
+        for index in CommandLine.arguments.indices where CommandLine.arguments[index] == "--show-capture" && CommandLine.arguments.indices.contains(index + 1) {
             do {
                 let url = URL(fileURLWithPath: CommandLine.arguments[index + 1])
                 guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
@@ -32,22 +45,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } catch { presentError(error) }
         }
     }
-    private func item(_ title: String, _ action: Selector) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; return item
+    private func item(_ title: String, _ action: Selector, symbol:String? = nil) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self
+        if let symbol { item.image = NSImage(systemSymbolName:symbol,accessibilityDescription:nil); item.image?.size = NSSize(width:16,height:16) }
+        return item
+    }
+    private func updateActivationPolicy() {
+        let hasWorkspace = !results.isEmpty || recording != nil || picker != nil || aboutWindow != nil
+        NSApp.setActivationPolicy(hasWorkspace ? .regular : .accessory)
+    }
+    func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows:Bool) -> Bool {
+        if let result = results.last { result.window?.deminiaturize(nil); result.showWindow(nil) }
+        else if let recording { recording.showWindow(nil) }
+        else if let aboutWindow { aboutWindow.makeKeyAndOrderFront(nil) }
+        else { statusItem.button?.performClick(nil) }
+        return true
     }
     private func rebuildMenu() {
         let menu = NSMenu(); menu.autoenablesItems = false
         let title = NSMenuItem(title: "EVBShot", action: nil, keyEquivalent: ""); title.isEnabled = false; menu.addItem(title)
-        for entry in [item("Capture Area…", #selector(captureArea)), item("Capture Full Screen", #selector(captureFull)), item("Capture Window…", #selector(captureWindow)), item("Scrolling Capture…", #selector(captureScrolling))] {
+        for entry in [item("Capture Area…", #selector(captureArea),symbol:"viewfinder"), item("Capture Full Screen", #selector(captureFull),symbol:"display"), item("Capture Window…", #selector(captureWindow),symbol:"macwindow"), item("Scrolling Capture…", #selector(captureScrolling),symbol:"arrow.down.square")] {
             entry.isEnabled = !busy; menu.addItem(entry)
         }
         menu.addItem(.separator())
-        let record = item(recording?.isRecording == true ? "Stop Recording & Review" : "Record Screen / Audio…", #selector(showRecorder))
+        let record = item(recording?.isRecording == true ? "Stop Recording & Review" : "Record Screen / Audio…", #selector(showRecorder),symbol:recording?.isRecording == true ? "stop.circle" : "record.circle")
         record.isEnabled = !busy || recording != nil; menu.addItem(record)
         menu.addItem(.separator())
-        menu.addItem(item("Open Captures Folder", #selector(openDrafts)))
-        menu.addItem(item("About EVBShot", #selector(about)))
-        let quit = item("Quit EVBShot", #selector(quit)); quit.isEnabled = !busy; menu.addItem(quit)
+        menu.addItem(item("Open Captures Folder", #selector(openDrafts),symbol:"folder"))
+        menu.addItem(item("About EVBShot", #selector(about),symbol:"info.circle"))
+        let quit = item("Quit EVBShot", #selector(quit),symbol:"power"); quit.isEnabled = !busy; menu.addItem(quit)
         statusItem.menu = menu
     }
     private func setBusy(_ value: Bool) { busy = value; rebuildMenu() }
@@ -64,10 +90,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { [self] in
             do {
                 picker = WindowPicker(content: try await CaptureEngine.content()) { [weak self] source in
-                    guard let self else { return }; self.picker = nil
+                    guard let self else { return }; self.picker = nil; self.updateActivationPolicy()
                     if let source { self.capture(source) } else { self.setBusy(false) }
                 }
-                picker?.showWindow(nil); NSApp.activate(ignoringOtherApps: true)
+                updateActivationPolicy(); picker?.showWindow(nil); NSApp.activate(ignoringOtherApps: true)
             } catch { setBusy(false); presentError(error) }
         }
     }
@@ -80,6 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     @objc private func captureScrolling() {
+        let targetApp = NSWorkspace.shared.frontmostApplication
         setBusy(true)
         selector.select { [weak self] source in
             guard let self else { return }
@@ -92,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     controller.onCancel = { [weak self] in self?.scrolling = nil; self?.setBusy(false) }
                     self.scrolling = controller; controller.start()
+                    if targetApp?.processIdentifier != ProcessInfo.processInfo.processIdentifier { targetApp?.activate() }
                 } catch { self.setBusy(false); presentError(error) }
             }
         }
@@ -104,28 +132,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let controller = RecordingController(display: NSScreen.underPointer.displayID)
         controller.onFinish = { [weak self] in self?.showResult($0) }
-        controller.onClose = { [weak self] in self?.recording = nil; self?.setBusy(false) }
+        controller.onClose = { [weak self] in self?.recording = nil; self?.setBusy(false); self?.updateActivationPolicy() }
         controller.onState = { [weak self] active in
             self?.statusItem.button?.image = NSImage(systemSymbolName: active ? "record.circle.fill" : "viewfinder.circle.fill", accessibilityDescription: active ? "EVBShot recording" : "EVBShot")
             self?.rebuildMenu()
         }
-        recording = controller; setBusy(true); controller.showWindow(nil); NSApp.activate(ignoringOtherApps: true)
+        recording = controller; setBusy(true); updateActivationPolicy(); controller.showWindow(nil); NSApp.activate(ignoringOtherApps: true)
     }
     private func showResult(_ artifact: CaptureArtifact) {
         let result = ResultController(artifact); results.append(result)
-        result.onClose = { [weak self, weak result] in self?.results.removeAll { $0 === result } }
-        result.showWindow(nil); NSApp.activate(ignoringOtherApps: true)
+        result.onClose = { [weak self, weak result] in self?.results.removeAll { $0 === result }; self?.updateActivationPolicy() }
+        updateActivationPolicy(); result.showWindow(nil); NSApp.activate(ignoringOtherApps: true)
     }
     @objc private func openDrafts() {
         do { try FileManager.default.createDirectory(at: CaptureFiles.root, withIntermediateDirectories: true); NSWorkspace.shared.open(CaptureFiles.root) }
         catch { presentError(error) }
     }
     @objc private func about() {
-        let alert = NSAlert(); alert.messageText = "EVBShot · Native Prototype"
-        alert.informativeText = "Native-resolution screenshots and vertical scrolling capture. Screen/audio recording with optional selfie camera. No keyboard shortcuts. Captures stay on this Mac."
-        alert.runModal()
+        NSApp.setActivationPolicy(.regular); NSApp.activate(ignoringOtherApps:true)
+        let credits = NSMutableAttributedString(string:"Eugene Barsky\n\nNative screenshots and screen recording.\nYour captures stay on this Mac.\n\n",attributes:[.font:NSFont.systemFont(ofSize:12)])
+        credits.append(NSAttributedString(string:"Source code",attributes:[.link:URL(string:"https://github.com/evb0110/evb-shot")!]))
+        credits.append(NSAttributedString(string:"  ·  "))
+        if let license = Bundle.main.url(forResource:"libpng-LICENSE",withExtension:"txt") { credits.append(NSAttributedString(string:"libpng license",attributes:[.link:license])) }
+        NSApp.orderFrontStandardAboutPanel(options:[.applicationName:"EVBShot",.applicationVersion:Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "0.1.0",.version:"Beta",.credits:credits,.applicationIcon:NSApp.applicationIconImage!])
+        aboutWindow = NSApp.keyWindow; aboutWindow?.hidesOnDeactivate = false
+        updateActivationPolicy(); NSApp.activate(ignoringOtherApps:true)
     }
     @objc private func quit() { NSApp.terminate(nil) }
+    func applicationShouldTerminate(_ sender:NSApplication) -> NSApplication.TerminateReply {
+        guard recording?.hasActiveWork != true, scrolling == nil, !(busy && recording == nil && picker == nil) else { return .terminateCancel }
+        for result in results {
+            result.canvas?.commitText()
+            if let error = result.editDocument?.persistenceError { presentError(error); return .terminateCancel }
+        }
+        return .terminateNow
+    }
 }
 
 MainActor.assumeIsolated {

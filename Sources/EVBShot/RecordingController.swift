@@ -3,6 +3,8 @@ import AVFoundation
 
 @MainActor
 final class RecordingController: NSWindowController, NSWindowDelegate {
+    static let frameRates = [15,24,30,60]
+    var selectedFrameRate:Int { Self.frameRates[fps.indexOfSelectedItem] }
     private var source: CaptureSource
     private var picker: WindowPicker?
     private let selector = AreaSelector()
@@ -28,38 +30,61 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
     var onClose: (() -> Void)?
     var onState: ((Bool) -> Void)?
     var isRecording: Bool { session != nil }
+    var hasActiveWork:Bool { preparing || finishing || session != nil }
 
     init(display: CGDirectDisplayID) {
         source = .display(display, nil)
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 520, height: 450), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.title = "Record with EVBShot"; window.isReleasedWhenClosed = false
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 520, height: 330), styleMask: [.titled, .closable,.miniaturizable], backing: .buffered, defer: false)
+        window.title = "Record with EVBShot"; window.isReleasedWhenClosed = false; window.hidesOnDeactivate = false
         super.init(window: window); window.delegate = self
-        let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 18
-        stack.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
-        let heading = NSTextField(labelWithString: "Screen recording"); heading.font = .systemFont(ofSize: 23, weight: .bold)
-        stack.addArrangedSubview(heading)
-        sourceLabel.font = .systemFont(ofSize: 13, weight: .semibold); stack.addArrangedSubview(sourceLabel)
+        let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 14
+        stack.edgeInsets = NSEdgeInsets(top:20,left:20,bottom:20,right:20)
+        sourceLabel.font = .systemFont(ofSize:12,weight:.semibold)
+        let sourceIcon = NSImageView(image:NSImage(systemSymbolName:"display",accessibilityDescription:nil)!)
+        stack.addArrangedSubview(NSStackView(views:[sourceIcon,sourceLabel]))
         let full = NSButton(title: "Full Screen", target: self, action: #selector(fullScreen))
         let area = NSButton(title: "Select Area…", target: self, action: #selector(selectArea))
         let windowButton = NSButton(title: "Choose Window…", target: self, action: #selector(selectWindow))
-        stack.addArrangedSubview(NSStackView(views: [full, area, windowButton]))
+        for button in [full,area,windowButton] { button.bezelStyle = .texturedRounded }
+        let sourceButtons = NSStackView(views:[full,area,windowButton]); sourceButtons.distribution = .fillEqually
+        sourceButtons.widthAnchor.constraint(equalToConstant:480).isActive = true
+        stack.addArrangedSubview(sourceButtons)
         resolution.addItems(withTitles: ["Native resolution", "50% resolution", "Fit within 1920 × 1080"])
-        fps.addItems(withTitles: ["15 FPS", "30 FPS", "60 FPS"]); fps.selectItem(at: 1)
-        stack.addArrangedSubview(NSStackView(views: [resolution, fps]))
-        stack.addArrangedSubview(NSStackView(views: [microphone, systemAudio]))
+        resolution.setAccessibilityLabel("Recording resolution")
+        fps.addItems(withTitles:Self.frameRates.map { "\($0) FPS" }); fps.selectItem(at:Self.frameRates.firstIndex(of:30)!)
+        fps.setAccessibilityLabel("Recording FPS")
+        let quality = NSStackView(views:[resolution,fps]); quality.spacing = 12
+        resolution.setContentHuggingPriority(.defaultLow,for:.horizontal)
+        quality.widthAnchor.constraint(equalToConstant:452).isActive = true
         camera.target = self; camera.action = #selector(updateOptions)
+        microphone.target = self; microphone.action = #selector(updateOptions)
+        systemAudio.target = self; systemAudio.action = #selector(updateOptions)
         audioOnly.target = self; audioOnly.action = #selector(updateOptions)
         corner.addItems(withTitles: CameraCorner.allCases.map(\.rawValue))
         cameraDevices = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInWideAngleCamera, .external, .continuityCamera], mediaType: .video, position: .unspecified).devices
         devices.addItems(withTitles: cameraDevices.map(\.localizedName))
         if cameraDevices.isEmpty { devices.addItem(withTitle: "No camera connected"); camera.isEnabled = false }
-        stack.addArrangedSubview(NSStackView(views: [camera, devices]))
-        stack.addArrangedSubview(NSStackView(views: [NSTextField(labelWithString: "Selfie position"), corner, audioOnly]))
-        status.preferredMaxLayoutWidth = 470; status.textColor = .secondaryLabelColor
+        devices.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
+        devices.widthAnchor.constraint(lessThanOrEqualToConstant:200).isActive = true
+        corner.setAccessibilityLabel("Selfie position")
+        let settings = NSStackView(); settings.orientation = .vertical; settings.alignment = .leading; settings.spacing = 14
+        settings.addArrangedSubview(quality)
+        settings.addArrangedSubview(NSStackView(views:[microphone,systemAudio,audioOnly]))
+        settings.addArrangedSubview(NSStackView(views:[camera,devices,corner]))
+        let card = NSBox(); card.boxType = .custom; card.cornerRadius = 10
+        card.borderWidth = 1; card.borderColor = .separatorColor; card.fillColor = .controlBackgroundColor
+        card.contentViewMargins = NSSize(width:14,height:14); card.contentView = settings
+        card.widthAnchor.constraint(equalToConstant:480).isActive = true
+        card.heightAnchor.constraint(equalToConstant:134).isActive = true
+        stack.addArrangedSubview(card)
+        status.preferredMaxLayoutWidth = 480; status.textColor = .secondaryLabelColor; status.font = .systemFont(ofSize:11)
+        status.widthAnchor.constraint(equalToConstant:480).isActive = true
         stack.addArrangedSubview(status)
         startButton.target = self; startButton.action = #selector(startOrStop)
-        startButton.bezelStyle = .rounded
-        stack.addArrangedSubview(startButton)
+        startButton.bezelStyle = .rounded; startButton.bezelColor = .controlAccentColor
+        let spacer = NSView(), buttons = NSStackView(views:[spacer,startButton]); spacer.setContentHuggingPriority(.defaultLow,for:.horizontal)
+        buttons.widthAnchor.constraint(equalToConstant:480).isActive = true
+        stack.addArrangedSubview(buttons)
         configurationViews = [full, area, windowButton, resolution, fps, microphone, systemAudio, camera, devices, corner, audioOnly]
         stack.wantsLayer = true; stack.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         window.contentView = stack; window.center(); updateOptions()
@@ -71,6 +96,13 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
         camera.isEnabled = !isAudio && !cameraDevices.isEmpty
         devices.isEnabled = !isAudio && camera.state == .on
         corner.isEnabled = devices.isEnabled
+        if !hasActiveWork {
+            var sources:[String] = []
+            if microphone.state == .on { sources.append("microphone") }
+            if systemAudio.state == .on { sources.append("computer audio") }
+            if !isAudio && camera.state == .on { sources.append("selfie camera") }
+            status.stringValue = sources.isEmpty ? "Audio and camera are off. Choose the sources you want to include." : "Included: " + sources.joined(separator:", ") + "."
+        }
     }
     @objc private func fullScreen() { source = .display(NSScreen.underPointer.displayID, nil); sourceLabel.stringValue = "Full screen" }
     @objc private func selectArea() {
@@ -103,7 +135,7 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
             do {
                 let surface = try await CaptureEngine.surface(for: source)
                 var options = RecordingOptions()
-                options.fps = [15, 30, 60][fps.indexOfSelectedItem]
+                options.fps = selectedFrameRate
                 options.scale = resolution.indexOfSelectedItem == 1 ? 0.5 : resolution.indexOfSelectedItem == 2 ? min(1, min(1920 / Double(surface.width), 1080 / Double(surface.height))) : 1
                 options.microphone = microphone.state == .on; options.systemAudio = systemAudio.state == .on
                 options.audioOnly = audioOnly.state == .on

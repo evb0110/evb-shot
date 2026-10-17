@@ -19,6 +19,14 @@ enum SelfTest {
         let area = try CaptureEngine.surface(for: .display(id, CGRect(x: 40, y: 40, width: 321, height: 239)), content: content)
         let crop = try await CaptureEngine.image(area)
         try check(crop.width == Int((321 * scale).rounded()) && crop.height == Int((239 * scale).rounded()), "live area native dimensions")
+        let streamFrames = StreamFrameCheck()
+        let feed = ScrollFrameFeed(onFrame:{ image in await streamFrames.record(image) },onError:{ error in await streamFrames.failed(error) })
+        try await feed.start(area)
+        try await Task.sleep(for:.milliseconds(500))
+        await feed.stop()
+        let streamResult = await streamFrames.result()
+        try check(streamResult.0 > 0 && streamResult.1 == crop.width && streamResult.2 == crop.height && streamResult.3 == nil,"live scrolling stream provides exact native area pixels: \(streamResult)")
+        print("PASS live scrolling SCStream, \(streamResult.0) native frames at \(streamResult.1)×\(streamResult.2); desktop pixels discarded")
         guard let window = content.windows.first(where: { $0.windowLayer == 0 && $0.frame.width > 200 && $0.frame.height > 100 && $0.owningApplication?.processID != ProcessInfo.processInfo.processIdentifier }) else { throw ShotError("Open a window for the capture smoke test.") }
         let windowSurface = try CaptureEngine.surface(for: .window(window.windowID), content: content)
         let windowImage = try await CaptureEngine.image(windowSurface)
@@ -101,8 +109,10 @@ enum SelfTest {
         let reject = try LongCapture(folder: rejectFolder)
         _ = try await reject.append(first)
         do { _ = try await reject.append(fixture(width: 401, height: 512, start: 2000)); throw ShotError("Self-test accepted missing overlap") }
-        catch let e as ShotError { try check(e.message.contains("No matching overlap"), e.message) }
+        catch ScrollAlignmentError.missing { }
         let rejectedSize = await reject.dimensions(); try check(rejectedSize.1 == 512, "rejected frame changed spool")
+        _ = try await reject.append(fixture(width:401,height:512,start:173))
+        let recoveredSize = await reject.dimensions(); try check(recoveredSize.1 == 685,"a valid frame resumes from the last good viewport after an animated or missed frame")
         let tile = try fixture(width: 401, height: 19, start: 0)
         func periodic(_ start: Int) throws -> PixelFrame {
             var pixels = Data()
@@ -117,7 +127,7 @@ enum SelfTest {
         let ambiguous = try LongCapture(folder: ambiguousFolder)
         _ = try await ambiguous.append(periodic(0))
         do { _ = try await ambiguous.append(periodic(5)); throw ShotError("Self-test accepted ambiguous overlap") }
-        catch let e as ShotError { try check(e.message.contains("overlap is ambiguous"), e.message) }
+        catch ScrollAlignmentError.ambiguous { }
         // Round-trip CGImage conversion must preserve orientation and channels.
         let provider = CGDataProvider(data: first.rgba as CFData)!
         let image = CGImage(width: 401, height: 512, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 401 * 4,
@@ -158,7 +168,7 @@ enum SelfTest {
         print("PASS real rendered text: 1000×994, exact native pixels across two scrolls")
     }
 
-    static func videoSample(index: Int, width: Int, height: Int) throws -> CMSampleBuffer {
+    static func videoSample(index: Int, width: Int, height: Int, fps:Int = 30) throws -> CMSampleBuffer {
         var buffer: CVPixelBuffer?
         CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA, [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &buffer)
         guard let buffer else { throw ShotError("Fixture pixel allocation failed") }
@@ -168,7 +178,7 @@ enum SelfTest {
         CIContext().render(image, to: buffer)
         var format: CMVideoFormatDescription?
         CMVideoFormatDescriptionCreateForImageBuffer(allocator: nil, imageBuffer: buffer, formatDescriptionOut: &format)
-        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 30), presentationTimeStamp: CMTime(value: Int64(index), timescale: 30), decodeTimeStamp: .invalid)
+        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: CMTimeScale(fps)), presentationTimeStamp: CMTime(value: Int64(index), timescale: CMTimeScale(fps)), decodeTimeStamp: .invalid)
         var sample: CMSampleBuffer?
         CMSampleBufferCreateReadyWithImageBuffer(allocator: nil, imageBuffer: buffer, formatDescription: format!, sampleTiming: &timing, sampleBufferOut: &sample)
         guard let sample else { throw ShotError("Fixture video sample failed") }
@@ -241,6 +251,15 @@ enum SelfTest {
         try check(duration.seconds > 0.65, "static desktop duration must follow the recording clock")
         try CaptureFiles.atomicCopy(from: staticArtifact.url, to: folder.appendingPathComponent("static-desktop.mov"))
         print("PASS 640×360 at 30 FPS, selfie compositor, two-source audio mix, audio removal, audio-only output")
+        var filmOptions = RecordingOptions(); filmOptions.fps = 24
+        let film = RecordingSession(); try film.startFixture(width:320,height:180,options:filmOptions,folder:folder.appendingPathComponent("media-24fps"))
+        try await film.feedFixture((0..<48).map { try videoSample(index:$0,width:320,height:180,fps:24) },type:.screen)
+        let filmArtifact = try await film.stop()
+        let filmTracks = try await AVURLAsset(url:filmArtifact.url).loadTracks(withMediaType:.video)
+        let filmRate = try await filmTracks[0].load(.nominalFrameRate)
+        try check(abs(filmRate-24) < 0.01,"selected 24 FPS is retained in the encoded video")
+        try CaptureFiles.atomicCopy(from:filmArtifact.url,to:folder.appendingPathComponent("24-fps.mov"))
+        print("PASS 320×180 recording at 24 FPS with 48 native-timestamped frames")
     }
     @MainActor static func save(folder: URL) async throws {
         let board = NSPasteboard(name: NSPasteboard.Name("com.evb.shot.test.\(UUID().uuidString)"))
@@ -312,4 +331,12 @@ enum SelfTest {
         }
         print("PASS full-size, 4K, ultra-wide and portrait captures keep a compact window and unchanged saved PNGs")
     }
+}
+
+private actor StreamFrameCheck {
+    private var count = 0, width = 0, height = 0
+    private var error:String?
+    func record(_ image:CGImage) { count += 1; width = image.width; height = image.height }
+    func failed(_ value:Error) { error = value.localizedDescription }
+    func result() -> (Int,Int,Int,String?) { (count,width,height,error) }
 }

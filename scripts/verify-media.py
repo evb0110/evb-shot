@@ -23,6 +23,11 @@ video = [s for s in mixed['streams'] if s['codec_type'] == 'video']
 audio = [s for s in mixed['streams'] if s['codec_type'] == 'audio']
 assert len(video) == len(audio) == 1
 assert (video[0]['width'], video[0]['height'], video[0]['nb_frames'], video[0]['r_frame_rate']) == (640, 360, '60', '30/1')
+film = probe('24-fps.mov')
+film_video = [s for s in film['streams'] if s['codec_type'] == 'video']
+assert len(film_video) == 1
+assert (film_video[0]['width'], film_video[0]['height'], film_video[0]['nb_frames'], film_video[0]['r_frame_rate']) == (320, 180, '48', '24/1')
+print('PASS selected 24 FPS export: 320 x 180, 48 frames, 24/1 encoded frame rate')
 frame = subprocess.check_output(['ffmpeg', '-v', 'error', '-i', str(folder / 'selfie-and-mixed-audio.mov'), '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])
 offset = (295 * 640 + 558) * 3
 r, g, b = frame[offset:offset+3]

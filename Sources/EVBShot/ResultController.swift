@@ -19,7 +19,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
     private let undoButton = NSButton()
     private let redoButton = NSButton()
     private let deleteButton = NSButton()
-    private let color = NSColorWell()
+    private let color = AnnotationColorButton(frame:.zero)
     private let stroke = NSPopUpButton()
     private let font = NSPopUpButton()
     private var toolButtons: [EditorTool: NSButton] = [:]
@@ -32,10 +32,16 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
 
     init(_ artifact: CaptureArtifact, editingWorkspace: URL? = nil) {
         self.artifact = artifact
-        let window = NSWindow(contentRect: CGRect(x:0,y:0,width:820,height:580), styleMask:[.titled,.closable,.resizable,.miniaturizable], backing:.buffered, defer:false)
+        let window = EditorWindow(contentRect: CGRect(x:0,y:0,width:820,height:580), styleMask:[.titled,.closable,.resizable,.miniaturizable], backing:.buffered, defer:false)
         window.title = "EVBShot"; window.titleVisibility = .hidden; window.toolbarStyle = .unifiedCompact
-        window.isReleasedWhenClosed = false
+        window.isReleasedWhenClosed = false; window.hidesOnDeactivate = false
         super.init(window:window); window.delegate = self
+        if artifact.kind == .image {
+            window.historyCommand = { [weak self] redo in
+                guard let self, !self.busy, self.canvas?.tool != .crop else { return }
+                if redo { self.redo() } else { self.undo() }
+            }
+        }
         if artifact.kind == .image {
             do {
                 let document = try ImageEditDocument(source: artifact.url, width: artifact.width, height: artifact.height, workspace: editingWorkspace)
@@ -108,7 +114,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
             button.widthAnchor.constraint(equalToConstant:30).isActive = true
             toolButtons[tool] = button
         }
-        color.color = MarkColor.red.nsColor; color.colorWellStyle = .minimal; color.target = self; color.action = #selector(styleChanged)
+        color.color = MarkColor.red.nsColor; color.colorChanged = { [weak self] in self?.styleChanged() }
         color.widthAnchor.constraint(equalToConstant:30).isActive = true; color.heightAnchor.constraint(equalToConstant:26).isActive = true
         color.setAccessibilityLabel("Annotation color")
         stroke.addItems(withTitles:["2 px","4 px","6 px","10 px","16 px"]); stroke.selectItem(at:2)
@@ -203,7 +209,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
         return true
     }
     func windowWillClose(_ notification:Notification) {
-        canvas?.commitText(); player?.pause(); player = nil
+        canvas?.commitText(); color.detachPanel(); player?.pause(); player = nil
         if let resizeObserver { NotificationCenter.default.removeObserver(resizeObserver) }
         onClose?()
     }

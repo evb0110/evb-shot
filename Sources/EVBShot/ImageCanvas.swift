@@ -143,11 +143,11 @@ final class ImageCanvas: NSView, NSTextFieldDelegate {
         let path = NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2); path.lineWidth = 1.5; path.fill(); path.stroke()
     }
     private func drawSelection(_ mark: ImageMark) {
+        if mark.kind == .arrow { [mark.start,mark.end].forEach(drawHandle); return }
         let rect = rectInView(MarkRenderer.bounds(mark)).insetBy(dx: -3, dy: -3)
         NSColor.controlAccentColor.setStroke()
         let border = NSBezierPath(rect: rect); border.setLineDash([4, 3], count: 2, phase: 0); border.stroke()
-        if mark.kind == .arrow { [mark.start,mark.end].forEach(drawHandle) }
-        else if mark.kind == .rectangle {
+        if mark.kind == .rectangle {
             handles(CGRect(x: min(mark.start.x,mark.end.x),y: min(mark.start.y,mark.end.y),width: abs(mark.end.x-mark.start.x),height: abs(mark.end.y-mark.start.y))).forEach(drawHandle)
         }
     }
@@ -250,7 +250,9 @@ final class ImageCanvas: NSView, NSTextFieldDelegate {
         field.font = .systemFont(ofSize: max(10,mark.fontSize * zoom),weight: .bold)
         field.textColor = mark.color.nsColor; field.backgroundColor = .textBackgroundColor
         field.isBordered = true; field.delegate = self
-        addSubview(field); textInput = field; window?.makeFirstResponder(field); needsDisplay = true
+        addSubview(field); textInput = field; window?.makeFirstResponder(field)
+        if let editor = field.currentEditor() as? NSTextView { editor.allowsUndo = true; editor.undoManager?.removeAllActions() }
+        needsDisplay = true
     }
     func commitText(_ replacement: String? = nil) {
         guard let field = textInput, var mark = textMark else { return }

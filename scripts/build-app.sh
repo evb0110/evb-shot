@@ -10,6 +10,7 @@ mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources"
 cp "$bin_path/EVBShot" "$app_path/Contents/MacOS/EVBShot"
 cp Resources/Info.plist "$app_path/Contents/Info.plist"
 cp Resources/libpng-LICENSE.txt "$app_path/Contents/Resources/libpng-LICENSE.txt"
+cp Resources/AppIcon.icns "$app_path/Contents/Resources/AppIcon.icns"
 signing_identity="${EVBSHOT_SIGN_IDENTITY:--}"
 if [[ "$signing_identity" == "-" ]]; then
     codesign --force --sign - --entitlements Resources/EVBShot.entitlements "$app_path"

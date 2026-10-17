@@ -33,6 +33,15 @@ enum StitchUpdate {
     case appended(Int)
     case unchanged
 }
+enum ScrollAlignmentError: LocalizedError {
+    case ambiguous, missing
+    var errorDescription:String? {
+        switch self {
+        case .ambiguous: return "Waiting for a clear overlap. Scroll slowly over content with distinct lines."
+        case .missing: return "Waiting for overlap. Scroll back toward the last captured content, then continue downward."
+        }
+    }
+}
 
 actor LongCapture {
     let folder: URL
@@ -75,9 +84,7 @@ actor LongCapture {
         }
         if result == 1 { return .unchanged }
         guard result == 0 else {
-            throw ShotError(result == 2
-                ? "The overlap is ambiguous. Scroll back to the last captured content, then resume. No uncertain pixels were added."
-                : "No matching overlap. Scroll back until the last captured content is visible, then resume. Keep fixed headers and scrollbars outside the area.")
+            throw result == 2 ? ScrollAlignmentError.ambiguous : ScrollAlignmentError.missing
         }
         let newRows = Int(shift)
         guard height <= Int(Int32.max) - newRows else {
