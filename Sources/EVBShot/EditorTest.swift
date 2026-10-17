@@ -1,4 +1,5 @@
 import AppKit
+import AVKit
 import ImageIO
 import PixelCore
 
@@ -32,9 +33,63 @@ enum EditorTest {
         guard let result else { throw ShotError("Stop must produce the recording without reopening setup") }
         try SelfTest.check(result.width == expected.width && result.height == expected.height && !result.hasAudio,"selected area geometry is retained and audio stays off")
         try SelfTest.check(!recorder.window!.isVisible && !recorder.hasActiveWork,"Stop leaves setup closed")
+        defer { try? FileManager.default.removeItem(at:result.url.deletingLastPathComponent()) }
+        try await mediaResults(video:result,folder:folder)
         try FileManager.default.copyItem(at:result.url,to:folder.appendingPathComponent("recording.mov"))
-        try FileManager.default.removeItem(at:result.url.deletingLastPathComponent())
         print("PASS real Start/Stop recording hides configuration and never reopens it")
+    }
+
+    static func mediaResults(video:CaptureArtifact,audio:CaptureArtifact? = nil,folder:URL) async throws {
+        let suite = "com.evb.shot.media-result-test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName:suite)!, settings = CaptureSaveSettings(defaults:UserDefaults(suiteName:suite)!)
+        let board = NSPasteboard(name:NSPasteboard.Name(suite))
+        defer { defaults.removePersistentDomain(forName:suite); board.releaseGlobally() }
+        settings.folder = folder.appendingPathComponent("media-review-saves")
+        func descendants(_ view:NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        func action(_ controller:ResultController,_ title:String) throws -> NSButton {
+            let views = controller.window!.toolbar!.items.compactMap(\.view).flatMap(descendants)
+            guard let button = views.compactMap({ $0 as? NSButton }).first(where: { $0.title == title }) else { throw ShotError("Missing result action: \(title)") }
+            return button
+        }
+        let controller = ResultController(video,saveSettings:settings,pasteboard:board)
+        defer { controller.close() }
+        try SelfTest.check(controller.window!.frame.width <= 500 && controller.window!.frame.height <= 400,"Stop must open a compact media preview instead of another large window")
+        let available = NSScreen.underPointer.visibleFrame.insetBy(dx:16,dy:16)
+        try SelfTest.check(abs(controller.window!.frame.maxX-available.maxX)<1 && abs(controller.window!.frame.minY-available.minY)<1,"recording preview opens in the screen corner")
+        controller.window!.setFrameOrigin(CGPoint(x:-20000,y:-20000))
+        controller.showWindow(nil)
+        let views = descendants(controller.window!.contentView!)
+        guard let poster = views.compactMap({ $0 as? NSImageView }).first(where: { $0.identifier?.rawValue == "RecordingPoster" }) else { throw ShotError("Video review needs a first-frame preview") }
+        for _ in 0..<100 where poster.image == nil { try await Task.sleep(nanoseconds:20_000_000) }
+        try SelfTest.check(poster.image != nil && !poster.isHidden,"paused preview displays a decoded frame, not a black player")
+        try await render(controller,name:"recording-review",folder:folder)
+        guard let view = views.compactMap({ $0 as? AVPlayerView }).first else { throw ShotError("Missing native playback controls") }
+        view.player?.isMuted = true; view.player?.play()
+        for _ in 0..<100 where !poster.isHidden { try await Task.sleep(nanoseconds:20_000_000) }
+        try SelfTest.check(poster.isHidden,"playing removes the first-frame poster")
+        view.player?.pause()
+        try SelfTest.check(poster.isHidden,"pausing retains the current video frame")
+        if video.hasAudio {
+            guard let include = views.compactMap({ $0 as? NSButton }).first(where: { $0.title == "Include audio" }) else { throw ShotError("Video review must expose Include audio") }
+            include.state = .off
+        }
+        try action(controller,"Save & Copy Path").performClick(nil); await controller.saveTask?.value
+        guard let saved = controller.lastSavedURL else { throw ShotError("Compact preview must save through its native button") }
+        try SelfTest.check(!controller.window!.isVisible && board.string(forType:.string) == "'\(saved.path)'","compact video save closes and copies its quoted path")
+        let audioTracks = try await AVURLAsset(url:saved).loadTracks(withMediaType:.audio)
+        try SelfTest.check(audioTracks.isEmpty,"Include audio off produces a silent saved video")
+        if let audio {
+            let audioController = ResultController(audio,saveSettings:settings,pasteboard:board)
+            defer { audioController.close() }
+            try SelfTest.check(audioController.window!.frame.width <= 500 && audioController.window!.frame.height <= 280,"audio recording uses a compact playback card")
+            audioController.window!.setFrameOrigin(CGPoint(x:-20000,y:-20000))
+            audioController.showWindow(nil)
+            try await render(audioController,name:"audio-review",folder:folder)
+            board.clearContents(); board.setString("keep clipboard",forType:.string)
+            try action(audioController,"Save").performClick(nil); await audioController.saveTask?.value
+            try SelfTest.check(audioController.lastSavedURL != nil && !audioController.window!.isVisible && board.string(forType:.string) == "keep clipboard","compact audio Save closes and preserves the clipboard")
+        }
+        print("PASS compact corner media review, decoded poster, playback, optional audio removal, and immediate save buttons")
     }
 
     static func landingPreview(folder:URL) async throws {

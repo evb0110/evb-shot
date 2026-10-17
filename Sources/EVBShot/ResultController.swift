@@ -25,6 +25,9 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
     private var toolButtons: [EditorTool: NSButton] = [:]
     private var actions = NSStackView()
     private var player: AVPlayer?
+    private var previewTask: Task<Void,Never>?
+    private var previewGenerator: AVAssetImageGenerator?
+    private var playbackObservation: NSKeyValueObservation?
     private var resizeObserver: NSObjectProtocol?
     private let saveSettings: CaptureSaveSettings
     private let pasteboard: NSPasteboard
@@ -38,9 +41,12 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
     init(_ artifact: CaptureArtifact, editingWorkspace: URL? = nil, saveSettings: CaptureSaveSettings = CaptureSaveSettings(), pasteboard: NSPasteboard = .general) {
         self.artifact = artifact
         self.saveSettings = saveSettings; self.pasteboard = pasteboard
-        let window = EditorWindow(contentRect: CGRect(x:0,y:0,width:820,height:580), styleMask:[.titled,.closable,.resizable,.miniaturizable], backing:.buffered, defer:false)
+        let compact = artifact.kind != .image
+        let initialSize = NSSize(width:compact ? 420 : 820,height:artifact.kind == .audio ? 150 : compact ? 270 : 580)
+        let window = EditorWindow(contentRect:CGRect(origin:.zero,size:initialSize), styleMask:[.titled,.closable,.resizable,.miniaturizable], backing:.buffered, defer:false)
         window.title = "EVB Shot"; window.titleVisibility = .hidden; window.toolbarStyle = .unifiedCompact
         window.isReleasedWhenClosed = false; window.hidesOnDeactivate = false
+        if compact { window.level = .floating; window.collectionBehavior = [.canJoinAllSpaces,.fullScreenAuxiliary] }
         super.init(window:window); window.delegate = self
         if artifact.kind == .image {
             window.historyCommand = { [weak self] redo in
@@ -65,7 +71,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
         let toolbar = NSToolbar(identifier:"EVBShot.Editor")
         toolbar.delegate = self; toolbar.displayMode = .iconOnly; toolbar.allowsUserCustomization = false
         window.toolbar = toolbar
-        let content = NSView(frame:CGRect(x:0,y:0,width:820,height:580))
+        let content = NSView(frame:CGRect(origin:.zero,size:initialSize))
         content.wantsLayer = true; content.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         let main: NSView
         if artifact.kind == .image {
@@ -73,13 +79,49 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
             scroll.drawsBackground = true; scroll.backgroundColor = .controlBackgroundColor
             main = scroll
         } else {
-            let view = AVPlayerView(); view.player = player; view.controlsStyle = .inline; main = view
+            let view = AVPlayerView(); view.player = player; view.controlsStyle = .inline
+            if artifact.kind == .video {
+                main = view
+                if let overlay = view.contentOverlayView {
+                    let poster = RecordingPosterView(); poster.identifier = NSUserInterfaceItemIdentifier("RecordingPoster")
+                    poster.imageScaling = .scaleProportionallyUpOrDown; poster.image = artifact.preview
+                    poster.translatesAutoresizingMaskIntoConstraints = false; overlay.addSubview(poster)
+                    NSLayoutConstraint.activate([poster.leadingAnchor.constraint(equalTo:overlay.leadingAnchor),poster.trailingAnchor.constraint(equalTo:overlay.trailingAnchor),poster.topAnchor.constraint(equalTo:overlay.topAnchor),poster.bottomAnchor.constraint(equalTo:overlay.bottomAnchor)])
+                    playbackObservation = player?.observe(\.rate,options:[.new]) { [weak poster] player,_ in
+                        guard player.rate > 0 else { return }
+                        Task { @MainActor in poster?.isHidden = true }
+                    }
+                    if poster.image == nil {
+                        let generator = AVAssetImageGenerator(asset:AVURLAsset(url:artifact.url))
+                        generator.appliesPreferredTrackTransform = true; generator.maximumSize = CGSize(width:840,height:600)
+                        previewGenerator = generator
+                        previewTask = Task { [weak self, weak poster] in
+                            do {
+                                let frame = try await generator.image(at:.zero).image
+                                guard !Task.isCancelled else { return }
+                                poster?.image = NSImage(cgImage:frame,size:NSSize(width:frame.width,height:frame.height))
+                            } catch {
+                                if !Task.isCancelled { self?.status.stringValue = "Press Play to preview" }
+                            }
+                        }
+                    }
+                }
+            } else {
+                let symbol = NSImageView(image:NSImage(systemSymbolName:"waveform",accessibilityDescription:"Audio recording")!)
+                symbol.contentTintColor = .secondaryLabelColor; symbol.symbolConfiguration = .init(pointSize:30,weight:.regular)
+                symbol.heightAnchor.constraint(equalToConstant:64).isActive = true
+                view.controlsStyle = .minimal; view.heightAnchor.constraint(equalToConstant:44).isActive = true
+                let audioCard = NSStackView(views:[symbol,view]); audioCard.orientation = .vertical; audioCard.spacing = 0
+                audioCard.alignment = .centerX; view.widthAnchor.constraint(equalTo:audioCard.widthAnchor).isActive = true
+                main = audioCard
+            }
         }
         let footer = NSStackView(); footer.spacing = 12; footer.alignment = .centerY
         footer.edgeInsets = NSEdgeInsets(top:0,left:14,bottom:0,right:14)
         if artifact.kind == .image { footer.addArrangedSubview(zoom) }
         if artifact.kind == .video && artifact.hasAudio { audio.state = .on; footer.addArrangedSubview(audio) }
         dimensions.font = .monospacedDigitSystemFont(ofSize:11,weight:.regular); dimensions.textColor = .secondaryLabelColor
+        dimensions.lineBreakMode = .byTruncatingTail; dimensions.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
         footer.addArrangedSubview(dimensions)
         let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow,for:.horizontal); footer.addArrangedSubview(spacer)
         status.font = .systemFont(ofSize:11); status.textColor = .secondaryLabelColor; status.lineBreakMode = .byTruncatingMiddle
@@ -95,15 +137,15 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
             main.topAnchor.constraint(equalTo:content.topAnchor), main.bottomAnchor.constraint(equalTo:footer.topAnchor),
             footer.leadingAnchor.constraint(equalTo:content.leadingAnchor), footer.trailingAnchor.constraint(equalTo:content.trailingAnchor),
             footer.bottomAnchor.constraint(equalTo:content.bottomAnchor), footer.heightAnchor.constraint(equalToConstant:34),
-            content.widthAnchor.constraint(greaterThanOrEqualToConstant:min(700,maximum.width)),
+            content.widthAnchor.constraint(greaterThanOrEqualToConstant:min(compact ? 360 : 700,maximum.width)),
             content.widthAnchor.constraint(lessThanOrEqualToConstant:min(1100,maximum.width)),
-            content.heightAnchor.constraint(greaterThanOrEqualToConstant:min(380,maximum.height)),
+            content.heightAnchor.constraint(greaterThanOrEqualToConstant:min(compact ? (artifact.kind == .audio ? 142 : 220) : 380,maximum.height)),
             content.heightAnchor.constraint(lessThanOrEqualToConstant:maximum.height)
         ])
         window.contentView = content
-        window.setContentSize(NSSize(width:min(820,maximum.width),height:min(580,maximum.height)))
+        window.setContentSize(NSSize(width:min(initialSize.width,maximum.width),height:min(initialSize.height,maximum.height)))
         let size = window.frame.size
-        window.setFrameOrigin(CGPoint(x:available.midX-size.width/2,y:available.midY-size.height/2))
+        window.setFrameOrigin(compact ? CGPoint(x:available.maxX-size.width,y:available.minY) : CGPoint(x:available.midX-size.width/2,y:available.midY-size.height/2))
         resizeObserver = NotificationCenter.default.addObserver(forName:NSView.frameDidChangeNotification,object:scroll.contentView,queue:.main) { [weak self] _ in
             Task { @MainActor in self?.canvas?.relayout(); self?.updateControls() }
         }
@@ -185,7 +227,8 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
             else if cropping { status.stringValue = "Drag the crop handles, then choose Crop" }
             else if status.stringValue.hasPrefix("Drag the crop") { status.stringValue = "" }
         } else {
-            dimensions.stringValue = artifact.detail; cropApply.isHidden = true; cropCancel.isHidden = true
+            dimensions.stringValue = artifact.kind == .audio ? "Audio recording · AAC" : "\(artifact.width.formatted()) × \(artifact.height.formatted()) px"
+            cropApply.isHidden = true; cropCancel.isHidden = true
         }
         savePath.isEnabled = !busy; save.isEnabled = !busy
     }
@@ -219,6 +262,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
         return true
     }
     func windowWillClose(_ notification:Notification) {
+        previewTask?.cancel(); previewTask = nil; previewGenerator?.cancelAllCGImageGeneration(); previewGenerator = nil; playbackObservation = nil
         canvas?.commitText(); color.detachPanel(); player?.pause(); player = nil
         if let resizeObserver { NotificationCenter.default.removeObserver(resizeObserver) }
         onClose?()
@@ -250,4 +294,8 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
             } catch { status.stringValue = error.localizedDescription }
         }
     }
+}
+
+private final class RecordingPosterView:NSImageView {
+    override func hitTest(_ point:NSPoint) -> NSView? { nil }
 }

@@ -260,6 +260,7 @@ enum SelfTest {
         try check(abs(filmRate-24) < 0.01,"selected 24 FPS is retained in the encoded video")
         try CaptureFiles.atomicCopy(from:filmArtifact.url,to:folder.appendingPathComponent("24-fps.mov"))
         print("PASS 320×180 recording at 24 FPS with 48 native-timestamped frames")
+        try await EditorTest.mediaResults(video:artifact,audio:audioArtifact,folder:folder)
     }
     @MainActor static func save(folder: URL) async throws {
         let board = NSPasteboard(name: NSPasteboard.Name("com.evb.shot.test.\(UUID().uuidString)"))
