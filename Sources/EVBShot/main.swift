@@ -5,8 +5,8 @@ import ImageIO
 enum StatusIcon {
     static func image(recording: Bool = false) -> NSImage {
         let image = NSImage(systemSymbolName: recording ? "record.circle.fill" : "viewfinder.circle.fill", accessibilityDescription: recording ? "EVBShot recording" : "EVBShot")!
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 22, weight: .regular))!
-        image.size = NSSize(width: 22, height: 22); image.isTemplate = true
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 16, weight: .regular))!
+        image.size = NSSize(width: 18, height: 18); image.isTemplate = true
         return image
     }
 }

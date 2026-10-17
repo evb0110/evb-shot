@@ -215,8 +215,8 @@ enum EditorTest {
     static func statusIcon(folder:URL) throws {
         for recording in [false,true] {
             let icon = StatusIcon.image(recording:recording)
-            try SelfTest.check(icon.size == CGSize(width:22,height:22) && icon.isTemplate,"menu icon has an explicit 22-point template size")
-            let bitmap = NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:44,pixelsHigh:44,bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0)!
+            try SelfTest.check(icon.size == CGSize(width:18,height:18) && icon.isTemplate,"menu icon has an 18-point template box with a 16-point symbol")
+            let bitmap = NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:36,pixelsHigh:36,bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0)!
             bitmap.size = icon.size
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep:bitmap)
@@ -224,11 +224,11 @@ enum EditorTest {
             icon.draw(in:CGRect(origin:.zero,size:icon.size))
             NSGraphicsContext.restoreGraphicsState()
             let frame = try PixelFrame(image:bitmap.cgImage!)
-            var minX = 44, minY = 44, maxX = -1, maxY = -1
-            for y in 0..<44 { for x in 0..<44 where frame.rgba[(y*44+x)*4+3] > 32 {
+            var minX = 36, minY = 36, maxX = -1, maxY = -1
+            for y in 0..<36 { for x in 0..<36 where frame.rgba[(y*36+x)*4+3] > 32 {
                 minX = min(minX,x); maxX = max(maxX,x); minY = min(minY,y); maxY = max(maxY,y)
             } }
-            try SelfTest.check(maxX-minX+1 >= 37 && maxY-minY+1 >= 37,"menu icon uses at least 37×37 physical pixels on a Retina display")
+            try SelfTest.check((28...34).contains(maxX-minX+1) && (28...34).contains(maxY-minY+1),"menu icon stays within 28–34 physical pixels, matching neighboring Retina menu icons")
             try bitmap.representation(using:.png,properties:[:])!.write(to:folder.appendingPathComponent(recording ? "status-recording.png" : "status-idle.png"))
             print("PASS menu icon recording=\(recording), visible ink=\(maxX-minX+1)×\(maxY-minY+1) Retina pixels")
         }
