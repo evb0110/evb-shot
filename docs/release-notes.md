@@ -2,6 +2,7 @@ The first public prototype of **EVB Shot**, a small native macOS screenshot and 
 
 - Capture an area, window, full screen, or a manually scrolling region at original resolution.
 - Add text, arrows, and rectangles, crop, and use native undo/redo.
+- Native-resolution editor tiles stay intact when macOS repeats a display-density notification.
 - Recording enters area selection directly, uses compact floating controls, hides setup during capture, and returns to a small corner preview on Stop.
 - Record with visible resolution and 15/24/30/60 FPS controls. Optional microphone, computer audio, selfie camera, and audio-only mode.
 - Save instantly to a configured folder. Save & Copy Path copies a shell-quoted absolute path and closes the editor.
