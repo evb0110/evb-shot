@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>EVBShot</string>
+<key>CFBundleIdentifier</key><string>com.evb.shot</string>
+<key>CFBundleName</key><string>EVBShot</string>
+<key>CFBundleDisplayName</key><string>EVBShot</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>LSMinimumSystemVersion</key><string>15.0</string>
+<key>LSUIElement</key><true/>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSCameraUsageDescription</key><string>Add an optional selfie camera to your screen recording. The camera is off by default.</string>
+<key>NSMicrophoneUsageDescription</key><string>Include your microphone in a recording when you enable it. The microphone is off by default.</string>
+<key>NSScreenCaptureUsageDescription</key><string>Capture screenshots, scrolling images, and screen recordings that you choose.</string>
+<key>NSAudioCaptureUsageDescription</key><string>Record computer audio only when you enable Computer audio.</string>
+<key>NSCameraUseContinuityCameraDeviceType</key><true/>
+</dict></plist>
