@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EVB Shot · Native screenshots and recording for Mac</title>
+  <meta name="description" content="Capture, annotate, and record on your Mac. Full-resolution scrolling screenshots, optional camera and audio, and one-click saving with a quoted file path. Free and open source.">
+  <meta name="theme-color" content="#f4f1ea">
+  <link rel="canonical" href="https://evb-shot.vercel.app/">
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+  <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/style.css">
+  <meta property="og:title" content="EVB Shot">
+  <meta property="og:description" content="Screenshots, with a little less ceremony. A small native capture tool for macOS.">
+  <meta property="og:url" content="https://evb-shot.vercel.app/">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="https://evb-shot.vercel.app/editor.png">
+  <meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+  <div class="page">
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="EVB Shot home"><img src="/icon.svg" alt="" width="38" height="38"><span>EVB Shot</span><span class="badge">Prototype</span></a>
+      <a class="source" href="https://github.com/evb0110/evb-shot">Source on GitHub <span aria-hidden="true">↗</span></a>
+    </header>
+    <main>
+      <section class="hero" aria-labelledby="title">
+        <p class="kicker">A small native tool for macOS</p>
+        <h1 id="title">Screenshots, with a little<br class="desktop-break"> less ceremony.</h1>
+        <p class="lede">Capture what matters. Add an arrow, a note, or a crop.<br class="desktop-break"> Save it and paste the file path straight into your conversation.</p>
+        <div class="downloads">
+          <a class="download-row" href="https://github.com/evb0110/evb-shot/releases/latest/download/EVB-Shot-macOS-arm64.zip">
+            <span class="download-copy"><strong>Download for Mac</strong><span>Apple Silicon · macOS 15 or later</span><small>ZIP archive · free and open source</small></span>
+            <span class="download-button" aria-hidden="true">↓</span>
+          </a>
+          <p class="download-note">Unzip and move <strong>EVB Shot</strong> to Applications. This prototype is not notarized. On first launch, use <a href="https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac">Privacy &amp; Security → Open Anyway</a>.</p>
+        </div>
+        <p class="release-line"><a href="https://github.com/evb0110/evb-shot/releases/latest">Latest release &amp; release notes</a><span>Swift + AppKit</span><span>No account needed</span></p>
+      </section>
+      <figure class="demo">
+        <div class="demo-image"><img src="/editor.png" alt="EVB Shot’s native editor with an arrow and rectangle over a sample project checklist, plus annotation and save controls." width="1640" height="1230" fetchpriority="high"></div>
+        <figcaption>The real native editor, with a generated sample image. Your original stays untouched.</figcaption>
+      </figure>
+      <section class="features" aria-labelledby="features-title">
+        <h2 id="features-title" class="kicker">From a quick capture to a little more context</h2>
+        <div class="feature-grid">
+          <article><span class="feature-icon" aria-hidden="true">⌗</span><h3>A region. A window. The screen.</h3><p>Choose from the menu bar and capture at native resolution. Window captures come without added backgrounds or shadows.</p></article>
+          <article><span class="feature-icon" aria-hidden="true">↧</span><h3>Long pages, original pixels.</h3><p>Select a scrolling region and scroll downward with overlap. The stitched PNG retains its full resolution, even for very tall images.</p></article>
+          <article><span class="feature-icon" aria-hidden="true">↗</span><h3>Make your point.</h3><p>Add text, arrows, and rectangles. Crop, zoom, undo, and redo. Editable drafts keep your original image and annotations separate.</p></article>
+          <article><span class="feature-icon" aria-hidden="true">◉</span><h3>Record with the controls in reach.</h3><p>Pick native or downscaled resolution and 15, 24, 30, or 60 FPS right in the recording window.</p></article>
+          <article><span class="feature-icon" aria-hidden="true">▣</span><h3>Your face and voice, when you want.</h3><p>Include your microphone, computer audio, or a selfie camera in a corner. All three are off by default. Audio-only recording is available too.</p></article>
+          <article><span class="feature-icon" aria-hidden="true">↳</span><h3>Save. Paste. Done.</h3><p>Save instantly to your chosen folder and close the editor. Save &amp; Copy Path also puts the full, safely quoted file path on the clipboard.</p></article>
+        </div>
+      </section>
+      <section class="details" aria-labelledby="details-title">
+        <div><h2 id="details-title">Small by design.</h2><p>A native menu bar app, built with Swift and Apple’s capture frameworks. No browser runtime, cloud uploads, or global capture shortcuts.</p></div>
+        <div class="prototype-note"><span class="kicker">Early, and useful</span><p>This is an evolving prototype. Scrolling capture is manual: exclude fixed headers and keep an overlap between views. Repeated or blank content can be difficult to align. Camera and microphone behavior may vary by device.</p><a href="https://github.com/evb0110/evb-shot/issues">Report a problem <span aria-hidden="true">↗</span></a></div>
+      </section>
+    </main>
+    <footer><span>© 2026 Eugene Barsky · <a href="https://github.com/evb0110/evb-shot/blob/main/LICENSE">MIT License</a></span><nav aria-label="Other projects"><a href="https://evb-viewer.com">EVB Viewer</a><a href="https://evb-player.vercel.app">EVB Player</a><a href="https://evb-stack.com">More projects ↗</a></nav></footer>
+  </div>
+</body>
+</html>

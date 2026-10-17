@@ -7,7 +7,7 @@ import CoreText
 enum SelfTest {
     // A short, silent live smoke. Private desktop pixels are deleted after validation.
     static func captureSmoke(folder: URL) async throws {
-        guard CGPreflightScreenCaptureAccess() else { throw ShotError("Enable EVBShot screen capture access in macOS Privacy & Security, then rerun this check.") }
+        guard CGPreflightScreenCaptureAccess() else { throw ShotError("Enable EVB Shot screen capture access in macOS Privacy & Security, then rerun this check.") }
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let id = CGMainDisplayID()
         let content = try await CaptureEngine.content()

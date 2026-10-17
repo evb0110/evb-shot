@@ -1,16 +1,20 @@
-# EVBShot
+# EVB Shot
 
 A small native macOS screenshot and recording prototype. Swift, AppKit, ScreenCaptureKit, AVFoundation, Core Image, libpng, and the system zlib. No Electron, web runtime, cloud upload, or global capture shortcuts.
 
 ## Use
 
-Open `~/Applications/EVBShot.app`, then click the viewfinder circle in the menu bar.
+Download the [latest release](https://github.com/evb0110/evb-shot/releases/latest), unzip, and move **EVB Shot.app** to Applications. Requires macOS 15+ and Apple Silicon. Click its viewfinder circle in the menu bar.
+
+[Website](https://evb-shot.vercel.app) · [Source](https://github.com/evb0110/evb-shot) · [MIT License](LICENSE)
+
+This prototype is not notarized. macOS may require **System Settings → Privacy & Security → Open Anyway** on first launch.
 
 - **Capture Area**, **Capture Full Screen**, **Capture Window**. PNG at native pixel dimensions. Window capture has no added background or drop shadow.
 - **Annotate and crop** in a compact image editor. The top toolbar provides Select, Rectangle, Arrow, Text, and Crop, plus color, line thickness or text size, Undo, Redo, and Delete. **⌘Z** undoes; **⇧⌘Z** redoes. While typing a label, those shortcuts operate on the text. Click to place text; double-click existing text with Select to edit it. Select and drag objects to move them, or drag rectangle corners and arrow endpoints to resize. Arrows and rectangles show no selection decorations while drawing. Select a shape to reveal small gray resize handles, without an outline. Crop has explicit **Cancel / Crop** actions. Zoom and image dimensions stay in the bottom bar.
 - **Scrolling Capture**. Select the scrolling content, leaving fixed headers, footers, and scrollbars outside the rectangle. A continuous native stream follows downward scrolling. Its floating controls stay visible while you use another app. Pause/Resume is available. Finish opens the editor. Intermediate animation or missing overlap is not committed; capture continues from the last good viewport when a valid overlap appears. If you scrolled too far, scroll back until that content is visible, then continue slowly.
-- **Record Screen / Audio**. Full screen, selected area, or window. Resolution (native, 50%, or fit within 1920 × 1080) and **15/24/30/60 FPS** are directly visible in a compact settings card. Microphone, computer audio, and selfie camera start off. Enable the sources you want. The camera is mirrored into the selected corner and continues updating over a static desktop. Audio-only recording is also available.
-- **Save** and **Save & Copy Path** immediately write to `~/Pictures/EVBShot`, without a save dialog, then close the editor on success. The toolbar stays visually stable while saving; errors leave the editor open for retry. Change the folder in **Settings → Save location**. A previously chosen save folder is retained. **Save & Copy Path** also copies the absolute path wrapped in shell-safe single quotes, including escaped apostrophes; **Save** leaves the clipboard alone. Repeated saves create separate files. Recorded video has an **Include audio** option so a silent copy can be saved without changing the compressed video frames.
+- **Record Screen / Audio**. Enters area selection immediately, then shows a compact floating control bar near the selection. Screen, Area, and Window show the actual selected mode. Start hides all setup controls; elapsed time and Stop live in the menu bar. Stop opens the result directly, without reopening setup. Full screen, selected area, or window. Resolution (native, 50%, or fit within 1920 × 1080) and **15/24/30/60 FPS** are directly visible in a compact settings card. Microphone, computer audio, and selfie camera start off. Enable the sources you want. The camera is mirrored into the selected corner and continues updating over a static desktop. Audio-only recording is also available.
+- **Save** and **Save & Copy Path** immediately write to `~/Pictures/EVB Shot`, without a save dialog, then close the editor on success. The toolbar stays visually stable while saving; errors leave the editor open for retry. Change the folder in **Settings → Save location**. A previously chosen save folder is retained. **Save & Copy Path** also copies the absolute path wrapped in shell-safe single quotes, including escaped apostrophes; **Save** leaves the clipboard alone. Repeated saves create separate files. Recorded video has an **Include audio** option so a silent copy can be saved without changing the compressed video frames.
 
 macOS may ask for screen capture access. Microphone/camera permission is requested only when starting a recording with that source enabled. Drafts stay in `~/Library/Application Support/EVBShot/Drafts`; **Open Drafts Folder** reveals them, while **Open Captures Folder** opens the configured save location. Original captures remain unchanged while editing. Editable annotations and crop coordinates are kept separately in `~/Library/Application Support/EVBShot/Edits`, and restored when the same capture is reopened. Saving creates a flattened PNG with the chosen crop. Drafts are retained until you remove them.
 
@@ -29,17 +33,17 @@ Requires macOS 15 or later and Xcode with Swift 6. The build script downloads th
 ```sh
 export TMPDIR="$(agent-tmpdir evb-shot-build)"
 agent-env run --mem 2G -- bash scripts/build-app.sh
-open dist/EVBShot.app
+open "dist/EVB Shot.app"
 ```
 
-Outside this workspace's agent environment, `bash scripts/build-app.sh` is sufficient. The default signature is ad hoc. Set `EVBSHOT_SIGN_IDENTITY` to a local Developer ID identity for a stable signed build. The script includes the camera/audio entitlements for hardened runtime signing. This local prototype is not notarized.
+Outside this workspace's agent environment, `bash scripts/build-app.sh` is sufficient. The default signature is ad hoc. Set `EVBSHOT_SIGN_IDENTITY` to a local Developer ID identity for a stable signed build. The script includes the camera/audio entitlements for hardened runtime signing. The public prototype is ad-hoc signed and not notarized. A local Developer ID build can set `EVBSHOT_NOTARY_PROFILE` to an existing notarytool keychain profile when packaging.
 
 ## Verify
 
 Use a new empty output directory for each run:
 
 ```sh
-dist/EVBShot.app/Contents/MacOS/EVBShot --self-test "$PWD/.devkit/checks/run-1"
+"dist/EVB Shot.app/Contents/MacOS/EVBShot" --self-test "$PWD/.devkit/checks/run-1"
 python3 scripts/verify-png.py .devkit/checks/run-1
 python3 scripts/verify-media.py .devkit/checks/run-1
 ```
@@ -59,3 +63,15 @@ The app tests native scrolling pixels, real rendered text, rejected overlaps, CG
 `CaptureEngine` and `Selection` handle native capture and selection. `LongCapture` owns the disk spool; `PixelCore` performs overlap matching and streaming PNG encoding/decoding. `ImageEditDocument` owns original-coordinate objects, crop state, persistence, and native undo history. `ImagePixelStore` owns disk pixels, viewport tiles, and strip exports; `ImageCanvas` handles gestures and drawing. `ResultController` provides the native editor toolbar and save actions. `RecordingSession` owns the serial media writer and frame clock. `CameraCapture` owns the camera queue and locked latest frame. `MediaExport` mixes audio while passing compressed video through.
 
 The CleanShot research in `docs/research` informed the feature boundaries and editor workflow. This implementation uses public Apple APIs, libpng, and original source code.
+
+## Releases and hosting
+
+GitHub Actions **CI** builds and exercises the native app on Apple Silicon macOS, including independent PNG verification. The **Release** workflow runs those checks before packaging and publishing a `v*` tag. `workflow_dispatch` builds the same archive as an Actions artifact without publishing.
+
+To release, update `CFBundleShortVersionString` and `CFBundleVersion` in `Resources/Info.plist`, update `docs/release-notes.md`, push the verified source, and push a matching version tag such as `v0.1.0`. A mismatched tag is rejected. The archive has a stable name for the landing page, SHA-256 checksums, and a source commit receipt. Hosted packages are ad-hoc signed; signing credentials are not embedded in the repository. There are no automatic application updates yet.
+
+For local packaging, run `bash scripts/package-release.sh`. Optional `EVBSHOT_SIGN_IDENTITY` and `EVBSHOT_NOTARY_PROFILE` use your existing Developer ID and notarization credentials. No signing keys are exported or uploaded.
+
+The [landing page](landing/README.md) is a separate static site. It is deployed manually to **evb-shot.vercel.app** using `scripts/deploy-landing.sh`; Git pushes do not deploy the website.
+
+The visible name is **EVB Shot**. The executable/module `EVBShot`, bundle ID `com.evb.shot`, and internal draft/edit paths remain stable for compatibility. Existing configured save folders are preserved, including the previous default when it already exists.

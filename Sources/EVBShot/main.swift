@@ -4,7 +4,7 @@ import ImageIO
 @MainActor
 enum StatusIcon {
     static func image(recording: Bool = false) -> NSImage {
-        let image = NSImage(systemSymbolName: recording ? "record.circle.fill" : "viewfinder.circle.fill", accessibilityDescription: recording ? "EVBShot recording" : "EVBShot")!
+        let image = NSImage(systemSymbolName: recording ? "record.circle.fill" : "viewfinder.circle.fill", accessibilityDescription: recording ? "EVB Shot recording" : "EVB Shot")!
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 16, weight: .regular))!
         image.size = NSSize(width: 18, height: 18); image.isTemplate = true
         return image
@@ -28,9 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         if let icon = Bundle.main.image(forResource:"AppIcon") { NSApp.applicationIconImage = icon }
         let mainMenu = NSMenu(), appItem = NSMenuItem(), appMenu = NSMenu()
-        appMenu.addItem(item("About EVBShot",#selector(about),symbol:"info.circle"))
+        appMenu.addItem(item("About EVB Shot",#selector(about),symbol:"info.circle"))
         appMenu.addItem(item("Settings…",#selector(showSettings),symbol:"gearshape"))
-        appMenu.addItem(.separator()); appMenu.addItem(item("Quit EVBShot",#selector(quit),symbol:"power"))
+        appMenu.addItem(.separator()); appMenu.addItem(item("Quit EVB Shot",#selector(quit),symbol:"power"))
         appItem.submenu = appMenu; mainMenu.addItem(appItem); NSApp.mainMenu = mainMenu
         closeObserver = NotificationCenter.default.addObserver(forName:NSWindow.willCloseNotification,object:nil,queue:.main) { [weak self] note in
             MainActor.assumeIsolated {
@@ -77,7 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private func rebuildMenu() {
         let menu = NSMenu(); menu.autoenablesItems = false
-        let title = NSMenuItem(title: "EVBShot", action: nil, keyEquivalent: ""); title.isEnabled = false; menu.addItem(title)
+        let title = NSMenuItem(title: "EVB Shot", action: nil, keyEquivalent: ""); title.isEnabled = false; menu.addItem(title)
         for entry in [item("Capture Area…", #selector(captureArea),symbol:"viewfinder"), item("Capture Full Screen", #selector(captureFull),symbol:"display"), item("Capture Window…", #selector(captureWindow),symbol:"macwindow"), item("Scrolling Capture…", #selector(captureScrolling),symbol:"arrow.down.square")] {
             entry.isEnabled = !busy; menu.addItem(entry)
         }
@@ -88,8 +88,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(item("Open Captures Folder", #selector(openCaptures),symbol:"folder"))
         menu.addItem(item("Open Drafts Folder", #selector(openDrafts),symbol:"tray.full"))
         menu.addItem(item("Settings…", #selector(showSettings),symbol:"gearshape"))
-        menu.addItem(item("About EVBShot", #selector(about),symbol:"info.circle"))
-        let quit = item("Quit EVBShot", #selector(quit),symbol:"power"); quit.isEnabled = !busy; menu.addItem(quit)
+        menu.addItem(item("About EVB Shot", #selector(about),symbol:"info.circle"))
+        let quit = item("Quit EVB Shot", #selector(quit),symbol:"power"); quit.isEnabled = !busy; menu.addItem(quit)
         statusItem.menu = menu
     }
     private func setBusy(_ value: Bool) { busy = value; rebuildMenu() }
@@ -143,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showRecorder() {
         if let recording {
             if recording.isRecording { recording.stop() }
-            else { recording.showWindow(nil); NSApp.activate(ignoringOtherApps: true) }
+            else if !recording.hasActiveWork { recording.showWindow(nil) }
             return
         }
         let controller = RecordingController(display: NSScreen.underPointer.displayID)
@@ -151,9 +151,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onClose = { [weak self] in self?.recording = nil; self?.setBusy(false); self?.updateActivationPolicy() }
         controller.onState = { [weak self] active in
             self?.statusItem.button?.image = StatusIcon.image(recording: active)
+            self?.statusItem.length = active ? NSStatusItem.variableLength : NSStatusItem.squareLength
+            self?.statusItem.button?.imagePosition = active ? .imageLeading : .imageOnly
+            if !active { self?.statusItem.button?.title = "" }
             self?.rebuildMenu()
         }
-        recording = controller; setBusy(true); updateActivationPolicy(); controller.showWindow(nil); NSApp.activate(ignoringOtherApps: true)
+        controller.onElapsed = { [weak self] time in
+            self?.statusItem.button?.font = .monospacedDigitSystemFont(ofSize:11,weight:.medium)
+            self?.statusItem.button?.imagePosition = .imageLeading
+            self?.statusItem.button?.title = " " + time
+        }
+        recording = controller; setBusy(true); updateActivationPolicy(); controller.beginSelection()
     }
     private func showResult(_ artifact: CaptureArtifact) {
         let result = ResultController(artifact); results.append(result)
@@ -185,7 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         credits.append(NSAttributedString(string:"Source code",attributes:[.link:URL(string:"https://github.com/evb0110/evb-shot")!]))
         credits.append(NSAttributedString(string:"  ·  "))
         if let license = Bundle.main.url(forResource:"libpng-LICENSE",withExtension:"txt") { credits.append(NSAttributedString(string:"libpng license",attributes:[.link:license])) }
-        NSApp.orderFrontStandardAboutPanel(options:[.applicationName:"EVBShot",.applicationVersion:Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "0.1.0",.version:"Beta",.credits:credits,.applicationIcon:NSApp.applicationIconImage!])
+        NSApp.orderFrontStandardAboutPanel(options:[.applicationName:"EVB Shot",.applicationVersion:Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "0.1.0",.version:"Beta",.credits:credits,.applicationIcon:NSApp.applicationIconImage!])
         aboutWindow = NSApp.keyWindow; aboutWindow?.hidesOnDeactivate = false
         updateActivationPolicy(); NSApp.activate(ignoringOtherApps:true)
     }
@@ -209,7 +217,7 @@ MainActor.assumeIsolated {
     } else if CommandLine.arguments.contains("--permission-status") {
         print("Screen capture access: \(CGPreflightScreenCaptureAccess())")
         exit(0)
-    } else if let index = CommandLine.arguments.firstIndex(where: { $0 == "--self-test" || $0 == "--capture-smoke" || $0 == "--result-layout-test" || $0 == "--editor-test" }), CommandLine.arguments.indices.contains(index + 1) {
+    } else if let index = CommandLine.arguments.firstIndex(where: { $0 == "--self-test" || $0 == "--capture-smoke" || $0 == "--result-layout-test" || $0 == "--editor-test" || $0 == "--recording-ui-test" || $0 == "--landing-preview" }), CommandLine.arguments.indices.contains(index + 1) {
         app.setActivationPolicy(.prohibited)
         let folder = URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true)
         Task {
@@ -217,6 +225,8 @@ MainActor.assumeIsolated {
                 if CommandLine.arguments[index] == "--capture-smoke" { try await SelfTest.captureSmoke(folder: folder) }
                 else if CommandLine.arguments[index] == "--result-layout-test" { try SelfTest.resultLayout(folder: folder) }
                 else if CommandLine.arguments[index] == "--editor-test" { try await EditorTest.run(folder: folder) }
+                else if CommandLine.arguments[index] == "--recording-ui-test" { try await EditorTest.recordingWorkflow(folder: folder) }
+                else if CommandLine.arguments[index] == "--landing-preview" { try await EditorTest.landingPreview(folder: folder) }
                 else { try await SelfTest.run(folder: folder) }
                 exit(0)
             }

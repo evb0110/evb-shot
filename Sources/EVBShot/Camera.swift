@@ -46,7 +46,7 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     func start(device: AVCaptureDevice) async throws {
         let deviceID = device.uniqueID
         guard await AVCaptureDevice.requestAccess(for: .video) else {
-            throw ShotError("Camera access is off. Enable EVBShot in System Settings → Privacy & Security → Camera.")
+            throw ShotError("Camera access is off. Enable EVB Shot in System Settings → Privacy & Security → Camera.")
         }
         try await withCheckedThrowingContinuation { continuation in
             queue.async { [self] in

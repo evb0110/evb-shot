@@ -47,7 +47,7 @@ enum CaptureFiles {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
         let ext = kind == .image ? "png" : kind == .video ? "mov" : "m4a"
-        return "EVBShot \(formatter.string(from: Date())).\(ext)"
+        return "EVB Shot \(formatter.string(from: Date())).\(ext)"
     }
     static func atomicCopy(from source: URL, to destination: URL) throws {
         if source.standardizedFileURL == destination.standardizedFileURL { return }
@@ -82,10 +82,18 @@ enum CaptureFiles {
 
 struct CaptureSaveSettings {
     let defaults: UserDefaults
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        // Keep an existing installation's default save location through the display-name change.
+        let legacyFolder = Self.defaultFolder.deletingLastPathComponent().appendingPathComponent("EVBShot", isDirectory: true)
+        if defaults === UserDefaults.standard, defaults.url(forKey: "saveFolder") == nil,
+           FileManager.default.fileExists(atPath: legacyFolder.path) {
+            defaults.set(legacyFolder, forKey: "saveFolder")
+        }
+    }
     static var defaultFolder: URL {
         FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("EVBShot", isDirectory: true)
+            .appendingPathComponent("EVB Shot", isDirectory: true)
     }
     var folder: URL {
         get { defaults.url(forKey: "saveFolder") ?? Self.defaultFolder }

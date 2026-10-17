@@ -4,6 +4,73 @@ import PixelCore
 
 @MainActor
 enum EditorTest {
+    static func recordingWorkflow(folder:URL) async throws {
+        guard CGPreflightScreenCaptureAccess() else { throw ShotError("Recording workflow test requires existing screen capture permission.") }
+        try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
+        let recorder = RecordingController(display:CGMainDisplayID())
+        let region = CaptureSource.display(CGMainDisplayID(),CGRect(x:80,y:100,width:640,height:360))
+        let expected = try await CaptureEngine.surface(for:region)
+        recorder.acceptSelection(region,present:false)
+        try SelfTest.check(recorder.selectedSourceIndex == 1,"actual selected recording region highlights Area")
+        recorder.window!.setFrameOrigin(CGPoint(x:-20000,y:-20000))
+        recorder.showWindow(nil)
+        func descendants(_ view:NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let controls = descendants(recorder.window!.contentView!)
+        controls.compactMap { $0 as? NSPopUpButton }.first(where: { $0.itemTitles.contains("Fit within 1920 × 1080") })?.selectItem(withTitle:"Fit within 1920 × 1080")
+        guard let start = controls.compactMap({ $0 as? NSButton }).first(where: { $0.title == "Start Recording" }) else { throw ShotError("Missing Start Recording action") }
+        var result:CaptureArtifact?
+        recorder.onFinish = { result = $0 }
+        start.performClick(nil)
+        for _ in 0..<100 where !recorder.isRecording { try await Task.sleep(nanoseconds:100_000_000) }
+        try SelfTest.check(recorder.isRecording,"Start launches the real screen recorder")
+        try SelfTest.check(!recorder.window!.isVisible,"recording setup must disappear when Start is pressed")
+        recorder.showWindow(nil)
+        try SelfTest.check(!recorder.window!.isVisible,"app switching cannot reopen configuration during recording")
+        try await Task.sleep(nanoseconds:700_000_000)
+        recorder.stop()
+        for _ in 0..<100 where result == nil { try await Task.sleep(nanoseconds:100_000_000) }
+        guard let result else { throw ShotError("Stop must produce the recording without reopening setup") }
+        try SelfTest.check(result.width == expected.width && result.height == expected.height && !result.hasAudio,"selected area geometry is retained and audio stays off")
+        try SelfTest.check(!recorder.window!.isVisible && !recorder.hasActiveWork,"Stop leaves setup closed")
+        try FileManager.default.copyItem(at:result.url,to:folder.appendingPathComponent("recording.mov"))
+        try FileManager.default.removeItem(at:result.url.deletingLastPathComponent())
+        print("PASS real Start/Stop recording hides configuration and never reopens it")
+    }
+
+    static func landingPreview(folder:URL) async throws {
+        try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
+        let width = 1440, height = 900
+        let context = CGContext(data:nil,width:width,height:height,bitsPerComponent:8,bytesPerRow:width*4,space:CGColorSpace(name:CGColorSpace.sRGB)!,bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(CGColor(gray:0.99,alpha:1)); context.fill(CGRect(x:0,y:0,width:width,height:height))
+        context.translateBy(x:0,y:CGFloat(height)); context.scaleBy(x:1,y:-1)
+        NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(cgContext:context,flipped:true)
+        func text(_ value:String,_ x:CGFloat,_ y:CGFloat,_ size:CGFloat,_ weight:NSFont.Weight = .regular,_ color:NSColor = .labelColor) {
+            (value as NSString).draw(at:CGPoint(x:x,y:y),withAttributes:[.font:NSFont.systemFont(ofSize:size,weight:weight),.foregroundColor:color])
+        }
+        text("FIELD NOTES / 018",100,80,20,.medium,.secondaryLabelColor)
+        text("A little context goes a long way.",100,160,55,.semibold)
+        text("Capture the idea. Point out the detail. Keep the conversation moving.",100,245,25,.regular,.secondaryLabelColor)
+        let rows = [("01", "Capture only what matters", "An area, a window, or a whole screen."),("02", "Make the next step obvious", "A short note and an arrow are often enough."),("03", "Share the path and get back to work", "Save in one click. Your original stays on your Mac.")]
+        for (index,row) in rows.enumerated() {
+            let y = CGFloat(365+index*145)
+            NSColor(calibratedWhite:0.91,alpha:1).setFill(); NSBezierPath(rect:CGRect(x:100,y:y-25,width:1240,height:1)).fill()
+            text(row.0,105,y,20,.medium,.secondaryLabelColor); text(row.1,180,y,31,.medium); text(row.2,180,y+48,22,.regular,.secondaryLabelColor)
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        let image = context.makeImage()!, source = folder.appendingPathComponent("sample.png")
+        try CaptureEngine.writePNG(image,to:source)
+        let artifact = CaptureArtifact(url:source,kind:.image,width:width,height:height,hasAudio:false,preview:NSImage(cgImage:image,size:CGSize(width:width,height:height)))
+        let controller = ResultController(artifact,editingWorkspace:folder.appendingPathComponent("edits"))
+        let document = controller.editDocument!, canvas = controller.canvas!
+        document.add(ImageMark(kind:.rectangle,start:CGPoint(x:168,y:492),end:CGPoint(x:805,y:590),thickness:4))
+        document.add(ImageMark(kind:.arrow,start:CGPoint(x:1150,y:430),end:CGPoint(x:838,y:529),thickness:5))
+        canvas.setTool(.arrow)
+        controller.window!.setFrameOrigin(CGPoint(x:-20000,y:-20000)); controller.window!.contentView!.layoutSubtreeIfNeeded()
+        canvas.relayout(); _ = canvas.bitmapImageRepForCachingDisplay(in:canvas.bounds)
+        canvas.displayIfNeeded(); await canvas.tileTask?.value; canvas.displayIfNeeded()
+        try await render(controller,name:"editor",folder:folder)
+        controller.close()
+    }
     static func run(folder: URL) async throws {
         try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
         try statusIcon(folder:folder)
@@ -26,7 +93,7 @@ enum EditorTest {
         let suite = "com.evb.shot.settings-test.\(UUID().uuidString)", defaults = UserDefaults(suiteName: suite)!
         defer { board.releaseGlobally(); defaults.removePersistentDomain(forName: suite) }
         let settings = CaptureSaveSettings(defaults: defaults)
-        try SelfTest.check(settings.folder == CaptureSaveSettings.defaultFolder, "new installations default to Pictures/EVBShot")
+        try SelfTest.check(settings.folder == CaptureSaveSettings.defaultFolder, "new installations default to Pictures/EVB Shot")
         let preferences = SettingsController(settings: settings)
         preferences.setSaveFolder(folder.appendingPathComponent("Saved captures - հայերեն",isDirectory:true))
         try SelfTest.check(CaptureSaveSettings(defaults: UserDefaults(suiteName: suite)!).folder == settings.folder, "save folder survives settings reconstruction")
@@ -141,7 +208,7 @@ enum EditorTest {
         try SelfTest.check(preferences.window!.frame.width == 480,"long save folder paths keep Settings compact")
         let settingsButtons = preferences.window!.contentView!.subviews[0].subviews.compactMap { $0 as? NSStackView }.flatMap { $0.subviews }.compactMap { $0 as? NSButton }
         settingsButtons.first { $0.title == "Use Default Folder" }!.performClick(nil)
-        try SelfTest.check(settings.folder.path == CaptureSaveSettings.defaultFolder.path,"Use Default Folder restores Pictures/EVBShot")
+        try SelfTest.check(settings.folder.path == CaptureSaveSettings.defaultFolder.path,"Use Default Folder restores Pictures/EVB Shot")
         try await renderWindow(preferences.window!,name:"default-save-settings",folder:folder)
         print("PASS actual Save/Save & Copy Path buttons: stable toolbar while saving, close exactly once after success, stay open on failure, persistent folder, native edited pixels and clipboard preservation")
         let outputSource = CGImageSourceCreateWithURL(exported as CFURL,nil)!
@@ -181,6 +248,15 @@ enum EditorTest {
         guard let fps = descendants(recorder.window!.contentView!).compactMap({ $0 as? NSPopUpButton }).first(where:{ $0.itemTitles.contains("24 FPS") }) else { throw ShotError("Recording UI must expose 24 FPS") }
         try SelfTest.check(recorder.selectedFrameRate == 30,"default frame rate remains 30 FPS")
         fps.selectItem(withTitle:"24 FPS"); try SelfTest.check(recorder.selectedFrameRate == 24,"24 FPS popup maps to the recording configuration")
+        recorder.acceptSelection(.display(CGMainDisplayID(),CGRect(x:80,y:100,width:640,height:480)),present:false)
+        try SelfTest.check(recorder.selectedSourceIndex == 1,"area selection highlights Area, not Screen")
+        recorder.acceptSelection(nil,present:false)
+        try SelfTest.check(recorder.selectedSourceIndex == 1,"cancelled reselection retains Area")
+        recorder.acceptSelection(.window(123),present:false)
+        try SelfTest.check(recorder.selectedSourceIndex == 2,"window selection highlights Window")
+        recorder.acceptSelection(.display(CGMainDisplayID(),nil),present:false)
+        try SelfTest.check(recorder.selectedSourceIndex == 0,"full screen selection highlights Screen")
+        try SelfTest.check(recorder.window!.styleMask.contains(.nonactivatingPanel) && !recorder.window!.hidesOnDeactivate,"recording controls float without stealing focus")
         try await renderRecorder(recorder,folder:folder)
         recorder.close()
         let scrollFolder = folder.appendingPathComponent("scroll-panel")

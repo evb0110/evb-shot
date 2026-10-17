@@ -39,7 +39,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
         self.artifact = artifact
         self.saveSettings = saveSettings; self.pasteboard = pasteboard
         let window = EditorWindow(contentRect: CGRect(x:0,y:0,width:820,height:580), styleMask:[.titled,.closable,.resizable,.miniaturizable], backing:.buffered, defer:false)
-        window.title = "EVBShot"; window.titleVisibility = .hidden; window.toolbarStyle = .unifiedCompact
+        window.title = "EVB Shot"; window.titleVisibility = .hidden; window.toolbarStyle = .unifiedCompact
         window.isReleasedWhenClosed = false; window.hidesOnDeactivate = false
         super.init(window:window); window.delegate = self
         if artifact.kind == .image {
