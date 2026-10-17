@@ -1,12 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+export LIBPNG_PREFIX="${LIBPNG_PREFIX:-$PWD/.devkit/dependencies/libpng/install}"
+if [[ ! -f "$LIBPNG_PREFIX/lib/libpng16.a" ]]; then bash scripts/build-libpng.sh "$LIBPNG_PREFIX"; fi
 swift build -c release -j 2
 bin_path="$(swift build -c release --show-bin-path)"
 app_path="$PWD/dist/EVBShot.app"
 mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources"
 cp "$bin_path/EVBShot" "$app_path/Contents/MacOS/EVBShot"
 cp Resources/Info.plist "$app_path/Contents/Info.plist"
+cp Resources/libpng-LICENSE.txt "$app_path/Contents/Resources/libpng-LICENSE.txt"
 signing_identity="${EVBSHOT_SIGN_IDENTITY:--}"
 if [[ "$signing_identity" == "-" ]]; then
     codesign --force --sign - --entitlements Resources/EVBShot.entitlements "$app_path"

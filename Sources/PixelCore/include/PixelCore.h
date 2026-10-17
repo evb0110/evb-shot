@@ -13,4 +13,8 @@ int evb_match_vertical(const uint8_t *previous, const uint8_t *current,
 // Writes to a new destination; removes an incomplete destination on failure.
 int evb_write_png(const char *raw_path, const char *png_path,
                   uint32_t width, uint32_t height, char *error, size_t error_size);
+
+// Decode with the established libpng implementation, streaming rows to disk.
+int evb_png_to_rgba(const char *png_path, const char *raw_path,
+                    uint32_t *width, uint32_t *height, char *error, size_t error_size);
 #endif

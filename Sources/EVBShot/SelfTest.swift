@@ -262,7 +262,7 @@ enum SelfTest {
     @MainActor static func renderUI(folder: URL, image: CGImage) throws {
         let recorder = RecordingController(display: CGMainDisplayID())
         let artifact = CaptureArtifact(url: folder.appendingPathComponent("stitch/scrolling-capture.png"), kind: .image, width: 401, height: 906, hasAudio: false, preview: NSImage(cgImage: image, size: NSSize(width: 401, height: 512)))
-        let result = ResultController(artifact)
+        let result = ResultController(artifact, editingWorkspace: folder.appendingPathComponent("editor-draft"))
         for (controller, name) in [(recorder as NSWindowController, "recording-controls.png"), (result as NSWindowController, "save-controls.png")] {
             guard let view = controller.window?.contentView else { throw ShotError("Missing native content view") }
             view.layoutSubtreeIfNeeded()
@@ -293,7 +293,7 @@ enum SelfTest {
             let original = try Data(contentsOf: url)
             let artifact = CaptureArtifact(url: url, kind: .image, width: width, height: height, hasAudio: false,
                                            preview: NSImage(cgImage: image, size: NSSize(width: width, height: height)))
-            let result = ResultController(artifact)
+            let result = ResultController(artifact, editingWorkspace: folder.appendingPathComponent("editor-\(width)x\(height)"))
             let window = result.window!, view = window.contentView!
             view.layoutSubtreeIfNeeded()
             let frame = window.frame
@@ -301,8 +301,8 @@ enum SelfTest {
             let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
             view.cacheDisplay(in: view.bounds, to: bitmap)
             try bitmap.representation(using: .png, properties: [:])!.write(to: folder.appendingPathComponent("result-\(width)x\(height).png"))
-            try check(frame.width <= 760 && frame.height <= 600, "result window grew with \(width)×\(height) capture: \(frame)")
-            try check(view.fittingSize.width <= 760, "image forces oversized content when the window opens: \(view.fittingSize)")
+            try check(frame.width <= 900 && frame.height <= 720, "result window grew with \(width)×\(height) capture: \(frame)")
+            try check(view.fittingSize.width <= 900, "image forces oversized content when the window opens: \(view.fittingSize)")
             try check(NSScreen.screens.contains { $0.visibleFrame.contains(frame) }, "result window must fit a single screen")
             let saved = folder.appendingPathComponent("saved-\(width)x\(height).png")
             try CaptureFiles.atomicCopy(from: artifact.url, to: saved)

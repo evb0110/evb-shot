@@ -2,114 +2,233 @@ import AppKit
 import AVKit
 import UniformTypeIdentifiers
 
-// Captured pixel dimensions describe the file, not the size of its preview UI.
-private final class CapturePreviewView: NSImageView {
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
-}
-
 @MainActor
-final class ResultController: NSWindowController, NSWindowDelegate {
+final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
     let artifact: CaptureArtifact
-    private let audio = NSButton(checkboxWithTitle: "Include recorded audio", target: nil, action: nil)
-    private let status = NSTextField(wrappingLabelWithString: "Your capture is ready. Save it and paste its full path directly into a thread.")
-    private let savePath = NSButton(title: "Save & Copy File Path…", target: nil, action: nil)
+    private(set) var editDocument: ImageEditDocument?
+    private(set) var canvas: ImageCanvas?
+    private let scroll = NSScrollView()
+    private let zoom = NSPopUpButton()
+    private let dimensions = NSTextField(labelWithString: "")
+    private let status = NSTextField(labelWithString: "")
+    private let audio = NSButton(checkboxWithTitle: "Include audio", target: nil, action: nil)
+    private let savePath = NSButton(title: "Save & Copy Path…", target: nil, action: nil)
     private let save = NSButton(title: "Save…", target: nil, action: nil)
+    private let cropApply = NSButton(title: "Crop", target: nil, action: nil)
+    private let cropCancel = NSButton(title: "Cancel", target: nil, action: nil)
+    private let undoButton = NSButton()
+    private let redoButton = NSButton()
+    private let deleteButton = NSButton()
+    private let color = NSColorWell()
+    private let stroke = NSPopUpButton()
+    private let font = NSPopUpButton()
+    private var toolButtons: [EditorTool: NSButton] = [:]
+    private var actions = NSStackView()
     private var player: AVPlayer?
+    private var resizeObserver: NSObjectProtocol?
+    private var busy = false
+    private var savedState: ImageEditState?
     var onClose: (() -> Void)?
 
-    init(_ artifact: CaptureArtifact) {
+    init(_ artifact: CaptureArtifact, editingWorkspace: URL? = nil) {
         self.artifact = artifact
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 660, height: 510), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "Capture Ready"; window.isReleasedWhenClosed = false
-        super.init(window: window)
-        window.delegate = self
-        if let notice = artifact.notice { status.stringValue = notice }
-        let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 16
-        stack.edgeInsets = NSEdgeInsets(top: 22, left: 24, bottom: 22, right: 24)
-        let heading = NSTextField(labelWithString: artifact.detail); heading.font = .systemFont(ofSize: 17, weight: .semibold)
-        heading.lineBreakMode = .byTruncatingTail
-        heading.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        stack.addArrangedSubview(heading)
-        let preview: NSView
+        let window = NSWindow(contentRect: CGRect(x:0,y:0,width:820,height:580), styleMask:[.titled,.closable,.resizable,.miniaturizable], backing:.buffered, defer:false)
+        window.title = "EVBShot"; window.titleVisibility = .hidden; window.toolbarStyle = .unifiedCompact
+        window.isReleasedWhenClosed = false
+        super.init(window:window); window.delegate = self
         if artifact.kind == .image {
-            let image = CapturePreviewView(); image.image = artifact.preview; image.imageScaling = .scaleProportionallyUpOrDown
-            preview = image
+            do {
+                let document = try ImageEditDocument(source: artifact.url, width: artifact.width, height: artifact.height, workspace: editingWorkspace)
+                editDocument = document
+                let canvas = ImageCanvas(document: document, preview: artifact.preview); self.canvas = canvas
+                document.onChange = { [weak self] in self?.canvas?.refresh(); self?.updateControls() }
+                canvas.onInteraction = { [weak self] in self?.updateControls() }
+                canvas.onError = { [weak self] in self?.status.stringValue = $0.localizedDescription }
+                scroll.documentView = canvas
+            } catch { status.stringValue = error.localizedDescription }
         } else {
-            let view = AVPlayerView(); let player = AVPlayer(url: artifact.url)
-            self.player = player; view.player = player; view.controlsStyle = .inline
-            preview = view
+            player = AVPlayer(url:artifact.url)
         }
-        preview.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-        preview.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        preview.translatesAutoresizingMaskIntoConstraints = false
-        stack.addArrangedSubview(preview)
-        preview.heightAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
-        let preferredHeight = preview.heightAnchor.constraint(equalToConstant: 250)
-        preferredHeight.priority = .defaultLow; preferredHeight.isActive = true
-        preview.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -48).isActive = true
-        if artifact.kind == .image, CGFloat(artifact.height) > (artifact.preview?.size.height ?? 0) + 1 {
-            let note = NSTextField(wrappingLabelWithString: "Preview shows the first viewport. The saved PNG contains the full image.")
-            note.font = .systemFont(ofSize: 12); note.textColor = .secondaryLabelColor; stack.addArrangedSubview(note)
-            note.widthAnchor.constraint(equalTo: preview.widthAnchor).isActive = true
-        }
-        if artifact.kind == .video && artifact.hasAudio {
-            audio.state = .on; stack.addArrangedSubview(audio)
-        }
-        status.textColor = .secondaryLabelColor; status.preferredMaxLayoutWidth = 600; stack.addArrangedSubview(status)
-        status.widthAnchor.constraint(equalTo: preview.widthAnchor).isActive = true
-        heading.widthAnchor.constraint(equalTo: preview.widthAnchor).isActive = true
-        savePath.target = self; savePath.action = #selector(saveAndCopy)
-        save.target = self; save.action = #selector(saveOnly)
-        let reveal = NSButton(title: "Show Draft", target: self, action: #selector(revealDraft))
-        stack.addArrangedSubview(NSStackView(views: [savePath, save, reveal]))
-        let content = NSView(frame: CGRect(x: 0, y: 0, width: 660, height: 510))
+        setupControls()
+        let toolbar = NSToolbar(identifier:"EVBShot.Editor")
+        toolbar.delegate = self; toolbar.displayMode = .iconOnly; toolbar.allowsUserCustomization = false
+        window.toolbar = toolbar
+        let content = NSView(frame:CGRect(x:0,y:0,width:820,height:580))
         content.wantsLayer = true; content.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        stack.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(stack)
-        let available = NSScreen.underPointer.visibleFrame.insetBy(dx: 16, dy: 16)
-        let maximum = window.contentRect(forFrameRect: available).size
-        // NSWindow minSize/maxSize are ignored under Auto Layout. Bound the
-        // content itself so neither images nor labels can expand it across screens.
+        let main: NSView
+        if artifact.kind == .image {
+            scroll.hasHorizontalScroller = true; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+            scroll.drawsBackground = true; scroll.backgroundColor = .controlBackgroundColor
+            main = scroll
+        } else {
+            let view = AVPlayerView(); view.player = player; view.controlsStyle = .inline; main = view
+        }
+        let footer = NSStackView(); footer.spacing = 12; footer.alignment = .centerY
+        footer.edgeInsets = NSEdgeInsets(top:0,left:14,bottom:0,right:14)
+        if artifact.kind == .image { footer.addArrangedSubview(zoom) }
+        if artifact.kind == .video && artifact.hasAudio { audio.state = .on; footer.addArrangedSubview(audio) }
+        dimensions.font = .monospacedDigitSystemFont(ofSize:11,weight:.regular); dimensions.textColor = .secondaryLabelColor
+        footer.addArrangedSubview(dimensions)
+        let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow,for:.horizontal); footer.addArrangedSubview(spacer)
+        status.font = .systemFont(ofSize:11); status.textColor = .secondaryLabelColor; status.lineBreakMode = .byTruncatingMiddle
+        status.setContentCompressionResistancePriority(.defaultLow,for:.horizontal); footer.addArrangedSubview(status)
+        let reveal = NSButton(image:NSImage(systemSymbolName:"folder",accessibilityDescription:"Show original capture")!,target:self,action:#selector(revealDraft))
+        reveal.bezelStyle = .inline; reveal.isBordered = false; reveal.toolTip = "Show original capture"; footer.addArrangedSubview(reveal)
+        main.translatesAutoresizingMaskIntoConstraints = false; footer.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(main); content.addSubview(footer)
+        let available = NSScreen.underPointer.visibleFrame.insetBy(dx:16,dy:16)
+        let maximum = window.contentRect(forFrameRect:available).size
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: content.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            content.widthAnchor.constraint(greaterThanOrEqualToConstant: min(580, maximum.width)),
-            content.widthAnchor.constraint(lessThanOrEqualToConstant: min(760, maximum.width)),
-            content.heightAnchor.constraint(greaterThanOrEqualToConstant: min(420, maximum.height)),
-            content.heightAnchor.constraint(lessThanOrEqualToConstant: min(600, maximum.height))
+            main.leadingAnchor.constraint(equalTo:content.leadingAnchor), main.trailingAnchor.constraint(equalTo:content.trailingAnchor),
+            main.topAnchor.constraint(equalTo:content.topAnchor), main.bottomAnchor.constraint(equalTo:footer.topAnchor),
+            footer.leadingAnchor.constraint(equalTo:content.leadingAnchor), footer.trailingAnchor.constraint(equalTo:content.trailingAnchor),
+            footer.bottomAnchor.constraint(equalTo:content.bottomAnchor), footer.heightAnchor.constraint(equalToConstant:34),
+            content.widthAnchor.constraint(greaterThanOrEqualToConstant:min(700,maximum.width)),
+            content.widthAnchor.constraint(lessThanOrEqualToConstant:min(1100,maximum.width)),
+            content.heightAnchor.constraint(greaterThanOrEqualToConstant:min(380,maximum.height)),
+            content.heightAnchor.constraint(lessThanOrEqualToConstant:maximum.height)
         ])
         window.contentView = content
-        window.setContentSize(NSSize(width: min(660, maximum.width), height: min(510, maximum.height)))
+        window.setContentSize(NSSize(width:min(820,maximum.width),height:min(580,maximum.height)))
         let size = window.frame.size
-        window.setFrameOrigin(NSPoint(x: available.midX - size.width / 2, y: available.midY - size.height / 2))
+        window.setFrameOrigin(CGPoint(x:available.midX-size.width/2,y:available.midY-size.height/2))
+        resizeObserver = NotificationCenter.default.addObserver(forName:NSView.frameDidChangeNotification,object:scroll.contentView,queue:.main) { [weak self] _ in
+            Task { @MainActor in self?.canvas?.relayout(); self?.updateControls() }
+        }
+        scroll.contentView.postsFrameChangedNotifications = true
+        content.layoutSubtreeIfNeeded(); canvas?.relayout(); updateControls()
+        if let notice = artifact.notice { status.stringValue = notice }
     }
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    func windowWillClose(_ notification: Notification) { player?.pause(); player = nil; onClose?() }
-    @objc private func saveAndCopy() { chooseDestination(copy: true) }
-    @objc private func saveOnly() { chooseDestination(copy: false) }
+    required init?(coder:NSCoder) { fatalError("init(coder:) is not supported") }
+    private func setupControls() {
+        for tool in EditorTool.allCases {
+            let button = NSButton(image:NSImage(systemSymbolName:tool.symbol,accessibilityDescription:tool.rawValue)!,target:self,action:#selector(toolClicked))
+            button.identifier = NSUserInterfaceItemIdentifier(tool.rawValue); button.toolTip = tool.rawValue
+            button.setAccessibilityLabel(tool.rawValue); button.setButtonType(.pushOnPushOff); button.bezelStyle = .texturedRounded
+            button.widthAnchor.constraint(equalToConstant:30).isActive = true
+            toolButtons[tool] = button
+        }
+        color.color = MarkColor.red.nsColor; color.colorWellStyle = .minimal; color.target = self; color.action = #selector(styleChanged)
+        color.widthAnchor.constraint(equalToConstant:30).isActive = true; color.heightAnchor.constraint(equalToConstant:26).isActive = true
+        color.setAccessibilityLabel("Annotation color")
+        stroke.addItems(withTitles:["2 px","4 px","6 px","10 px","16 px"]); stroke.selectItem(at:2)
+        stroke.target = self; stroke.action = #selector(styleChanged); stroke.setAccessibilityLabel("Line thickness")
+        font.addItems(withTitles:["16 pt","24 pt","32 pt","48 pt","64 pt","96 pt"]); font.selectItem(at:3)
+        font.target = self; font.action = #selector(styleChanged); font.setAccessibilityLabel("Text size")
+        for (button,symbol,label,action) in [(undoButton,"arrow.uturn.backward","Undo",#selector(undo)),(redoButton,"arrow.uturn.forward","Redo",#selector(redo)),(deleteButton,"trash","Delete annotation",#selector(deleteMark))] {
+            button.image = NSImage(systemSymbolName:symbol,accessibilityDescription:label); button.target = self; button.action = action
+            button.toolTip = label; button.setAccessibilityLabel(label); button.bezelStyle = .texturedRounded
+        }
+        zoom.addItems(withTitles:["Fit","Fit width","50%","100%","200%","400%"])
+        if artifact.height > artifact.width * 3 { zoom.selectItem(at:1) }
+        zoom.target = self; zoom.action = #selector(zoomChanged); zoom.controlSize = .small
+        zoom.setAccessibilityLabel("Zoom")
+        savePath.target = self; savePath.action = #selector(saveAndCopy); savePath.bezelStyle = .rounded; savePath.bezelColor = .controlAccentColor
+        save.target = self; save.action = #selector(saveOnly); save.bezelStyle = .rounded
+        cropApply.target = self; cropApply.action = #selector(applyCrop); cropApply.bezelStyle = .rounded; cropApply.bezelColor = .controlAccentColor
+        cropCancel.target = self; cropCancel.action = #selector(cancelCrop); cropCancel.bezelStyle = .rounded
+        actions = NSStackView(views:[save,savePath,cropCancel,cropApply]); actions.spacing = 8
+    }
+    func toolbarDefaultItemIdentifiers(_ toolbar:NSToolbar) -> [NSToolbarItem.Identifier] {
+        var ids: [NSToolbarItem.Identifier] = []
+        if artifact.kind == .image { ids = [NSToolbarItem.Identifier("tools"), NSToolbarItem.Identifier("style"), NSToolbarItem.Identifier("history")] }
+        ids.append(.flexibleSpace); ids.append(NSToolbarItem.Identifier("save")); return ids
+    }
+    func toolbarAllowedItemIdentifiers(_ toolbar:NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
+    func toolbar(_ toolbar:NSToolbar,itemForItemIdentifier id:NSToolbarItem.Identifier,willBeInsertedIntoToolbar:Bool) -> NSToolbarItem? {
+        let item = NSToolbarItem(itemIdentifier:id)
+        switch id.rawValue {
+        case "tools": item.view = NSStackView(views:EditorTool.allCases.compactMap { toolButtons[$0] }); item.label = "Annotation tools"
+        case "style": item.view = NSStackView(views:[color,stroke,font]); item.label = "Style"
+        case "history": item.view = NSStackView(views:[undoButton,redoButton,deleteButton]); item.label = "History"
+        case "save": item.view = actions; item.label = "Save"
+        default:return nil
+        }
+        if id.rawValue == "save" { item.visibilityPriority = .high }
+        return item
+    }
+    func updateControls() {
+        if let document = editDocument, let canvas {
+            let rect = canvas.pendingCrop ?? document.state.crop
+            dimensions.stringValue = "\(Int(rect.width).formatted()) × \(Int(rect.height).formatted()) px"
+            let cropping = canvas.tool == .crop
+            toolButtons.forEach { $0.value.state = $0.key == canvas.tool ? .on : .off; $0.value.isEnabled = !busy }
+            save.isHidden = cropping; savePath.isHidden = cropping; cropApply.isHidden = !cropping; cropCancel.isHidden = !cropping
+            cropApply.isEnabled = rect.width >= 2 && rect.height >= 2
+            if let mark = canvas.selectedMark {
+                color.color = mark.color.nsColor; canvas.color = mark.color; canvas.thickness = mark.thickness; canvas.fontSize = mark.fontSize
+                stroke.selectItem(at:[2,4,6,10,16].firstIndex(of:Int(mark.thickness)) ?? 2)
+                font.selectItem(at:[16,24,32,48,64,96].firstIndex(of:Int(mark.fontSize)) ?? 3)
+            }
+            font.isHidden = canvas.tool != .text && canvas.selectedMark?.kind != .text
+            stroke.isHidden = !font.isHidden
+            color.isEnabled = !cropping && !busy; font.isEnabled = !busy; stroke.isEnabled = !busy
+            undoButton.isEnabled = document.history.canUndo && !cropping && !busy; redoButton.isEnabled = document.history.canRedo && !cropping && !busy
+            deleteButton.isEnabled = canvas.selectedMark != nil && !cropping && !busy
+            window?.isDocumentEdited = document.state != (savedState ?? ImageEditState(crop:CGRect(x:0,y:0,width:document.width,height:document.height)))
+            if let error = document.persistenceError { status.stringValue = "Cannot keep draft edits: \(error.localizedDescription)" }
+            else if cropping { status.stringValue = "Drag the crop handles, then choose Crop" }
+            else if status.stringValue.hasPrefix("Drag the crop") { status.stringValue = "" }
+        } else {
+            dimensions.stringValue = artifact.detail; cropApply.isHidden = true; cropCancel.isHidden = true
+        }
+        savePath.isEnabled = !busy; save.isEnabled = !busy
+    }
+    @objc private func toolClicked(_ sender:NSButton) {
+        guard let id = sender.identifier?.rawValue, let tool = EditorTool(rawValue:id) else { return }
+        canvas?.setTool(tool); updateControls()
+    }
+    @objc private func styleChanged() {
+        canvas?.color = MarkColor(color.color); canvas?.thickness = CGFloat([2,4,6,10,16][stroke.indexOfSelectedItem])
+        canvas?.fontSize = CGFloat([16,24,32,48,64,96][font.indexOfSelectedItem]); canvas?.updateStyle()
+    }
+    @objc private func zoomChanged() { canvas?.setZoom(zoom.indexOfSelectedItem) }
+    @objc private func undo() { canvas?.commitText(); editDocument?.history.undo(); updateControls() }
+    @objc private func redo() { canvas?.commitText(); editDocument?.history.redo(); updateControls() }
+    @objc private func deleteMark() { canvas?.deleteSelection() }
+    @objc private func applyCrop() { canvas?.applyCrop(); updateControls() }
+    @objc private func cancelCrop() { canvas?.setTool(.select); updateControls() }
+    @objc private func saveAndCopy() { chooseDestination(copy:true) }
+    @objc private func saveOnly() { chooseDestination(copy:false) }
     @objc private func revealDraft() { NSWorkspace.shared.activateFileViewerSelecting([artifact.url]) }
-    private func chooseDestination(copy: Bool) {
+    func windowShouldClose(_ sender:NSWindow) -> Bool {
+        canvas?.commitText()
+        if busy { return false }
+        if let error = editDocument?.persistenceError {
+            let alert = NSAlert(); alert.messageText = "These edits could not be kept in Drafts."
+            alert.informativeText = "Keep the editor open to save your work. \(error.localizedDescription)"
+            alert.addButton(withTitle:"Keep Open"); alert.addButton(withTitle:"Discard Edits")
+            return alert.runModal() == .alertSecondButtonReturn
+        }
+        return true
+    }
+    func windowWillClose(_ notification:Notification) {
+        canvas?.commitText(); player?.pause(); player = nil
+        if let resizeObserver { NotificationCenter.default.removeObserver(resizeObserver) }
+        onClose?()
+    }
+    private func chooseDestination(copy:Bool) {
+        canvas?.commitText()
         guard let window else { return }
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = CaptureFiles.suggestedName(artifact.kind)
+        let panel = NSSavePanel(); panel.nameFieldStringValue = CaptureFiles.suggestedName(artifact.kind)
         panel.allowedContentTypes = [artifact.kind == .image ? .png : artifact.kind == .video ? .quickTimeMovie : .mpeg4Audio]
         panel.canCreateDirectories = true
-        panel.directoryURL = UserDefaults.standard.url(forKey: "saveFolder") ?? FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
-        panel.beginSheetModal(for: window) { [weak self] response in
+        panel.directoryURL = UserDefaults.standard.url(forKey:"saveFolder") ?? FileManager.default.urls(for:.picturesDirectory,in:.userDomainMask).first
+        panel.beginSheetModal(for:window) { [weak self] response in
             guard let self, response == .OK, let destination = panel.url else { return }
-            self.savePath.isEnabled = false; self.save.isEnabled = false
-            self.status.stringValue = "Saving…"
-            let includeAudio = self.artifact.kind != .video || !self.artifact.hasAudio || self.audio.state == .on
-            Task {
+            self.busy = true; self.canvas?.editingEnabled = false; self.updateControls(); self.status.stringValue = "Saving…"
+            Task { [self] in
                 do {
-                    let source = self.artifact.kind == .image ? self.artifact.url : try await MediaExport.normalized(self.artifact.url, includeAudio: includeAudio)
-                    try await saveCaptureFile(from: source, to: destination, copyFilePath: copy)
-                    if source != self.artifact.url { try? FileManager.default.removeItem(at: source) }
-                    UserDefaults.standard.set(destination.deletingLastPathComponent(), forKey: "saveFolder")
-                    self.status.stringValue = copy ? "Saved. Full file path copied to the clipboard." : "Saved to \(destination.path)"
+                    let source:URL
+                    if let document = self.editDocument { source = try await document.export() }
+                    else if self.artifact.kind == .image { source = self.artifact.url }
+                    else { source = try await MediaExport.normalized(self.artifact.url,includeAudio:self.artifact.kind != .video || self.audio.state == .on || !self.artifact.hasAudio) }
+                    try await saveCaptureFile(from:source,to:destination,copyFilePath:copy)
+                    UserDefaults.standard.set(destination.deletingLastPathComponent(),forKey:"saveFolder")
+                    self.savedState = self.editDocument?.state; window.isDocumentEdited = false
+                    self.status.stringValue = copy ? "Saved · file path copied" : "Saved"
                 } catch { self.status.stringValue = error.localizedDescription }
-                self.savePath.isEnabled = true; self.save.isEnabled = true
+                self.busy = false; self.canvas?.editingEnabled = true; self.updateControls()
             }
         }
     }

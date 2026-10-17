@@ -137,13 +137,14 @@ MainActor.assumeIsolated {
     } else if CommandLine.arguments.contains("--permission-status") {
         print("Screen capture access: \(CGPreflightScreenCaptureAccess())")
         exit(0)
-    } else if let index = CommandLine.arguments.firstIndex(where: { $0 == "--self-test" || $0 == "--capture-smoke" || $0 == "--result-layout-test" }), CommandLine.arguments.indices.contains(index + 1) {
+    } else if let index = CommandLine.arguments.firstIndex(where: { $0 == "--self-test" || $0 == "--capture-smoke" || $0 == "--result-layout-test" || $0 == "--editor-test" }), CommandLine.arguments.indices.contains(index + 1) {
         app.setActivationPolicy(.prohibited)
         let folder = URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true)
         Task {
             do {
                 if CommandLine.arguments[index] == "--capture-smoke" { try await SelfTest.captureSmoke(folder: folder) }
                 else if CommandLine.arguments[index] == "--result-layout-test" { try SelfTest.resultLayout(folder: folder) }
+                else if CommandLine.arguments[index] == "--editor-test" { try await EditorTest.run(folder: folder) }
                 else { try await SelfTest.run(folder: folder) }
                 exit(0)
             }
