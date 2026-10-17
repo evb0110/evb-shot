@@ -187,7 +187,7 @@ actor ImagePixelStore {
         let region = rect.integral.intersection(CGRect(x: 0, y: 0, width: width, height: height))
         guard !region.isEmpty else { throw ShotError("Empty image viewport") }
         let file = try FileHandle(forReadingFrom: prepare()); defer { try? file.close() }
-        let w = min(Int(region.width), max(1, min(2048, Int(maximum.width)))), h = min(Int(region.height), max(1, min(2048, Int(maximum.height))))
+        let w = min(Int(region.width), max(1, Int(ceil(maximum.width)))), h = min(Int(region.height), max(1, Int(ceil(maximum.height))))
         var pixels = Data(count: w * h * 4)
         for row in 0..<h {
             try Task.checkCancellation()

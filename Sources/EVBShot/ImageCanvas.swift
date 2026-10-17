@@ -19,11 +19,13 @@ final class ImageCanvas: NSView, NSTextFieldDelegate {
     private(set) var pendingCrop: CGRect?
     private(set) var zoom: CGFloat = 1
     private var fitMode = 0
+    private var zoomPercentage: CGFloat = 1
     private var imageOrigin = CGPoint.zero
-    private var tileImage: CGImage?
+    private(set) var tileImage: CGImage?
     private var tileRect = CGRect.zero
     private var requested = CGRect.zero
-    private var tileTask: Task<Void, Never>?
+    private(set) var tileTask: Task<Void, Never>?
+    private var tileBackingScale: CGFloat = 0
     private var dragAnchor: CGPoint?
     private var dragMark: ImageMark?
     private var originalMark: ImageMark?
@@ -46,6 +48,17 @@ final class ImageCanvas: NSView, NSTextFieldDelegate {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
+    private var backingScale: CGFloat { window?.backingScaleFactor ?? 1 }
+    private func invalidateTiles() {
+        tileTask?.cancel(); tileTask = nil; tileImage = nil; tileRect = .zero; requested = .zero; tileBackingScale = 0
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow(); invalidateTiles(); relayout()
+    }
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties(); invalidateTiles(); relayout()
+    }
+
     var selectedMark: ImageMark? { document.state.marks.first { $0.id == selected } }
     func setTool(_ tool: EditorTool) {
         commitText(); self.tool = tool
@@ -60,8 +73,8 @@ final class ImageCanvas: NSView, NSTextFieldDelegate {
     func setZoom(_ index: Int) {
         commitText()
         fitMode = index < 2 ? index : -1
-        if index >= 2 { zoom = [0.5, 1, 2, 4][min(3, index - 2)] }
-        tileImage = nil; requested = .zero; relayout(); onInteraction?()
+        if index >= 2 { zoomPercentage = [0.5, 1, 2, 4][min(3, index - 2)] }
+        invalidateTiles(); relayout(); onInteraction?()
     }
     func relayout() {
         guard let clip = enclosingScrollView?.contentView else { return }
@@ -71,11 +84,13 @@ final class ImageCanvas: NSView, NSTextFieldDelegate {
             let horizontal = max(0.00001, (visible.width - 40) / crop.width)
             zoom = fitMode == 1 ? horizontal : min(horizontal, max(0.00001, (visible.height - 40) / crop.height))
             zoom = min(2, zoom)
-        }
-        if abs(previousZoom-zoom) > 0.00001 { tileTask?.cancel(); tileImage = nil; tileRect = .zero; requested = .zero }
+        } else { zoom = zoomPercentage / backingScale }
+        if abs(previousZoom-zoom) > 0.00001 { invalidateTiles() }
         let size = CGSize(width: max(visible.width, crop.width * zoom + 40), height: max(visible.height, crop.height * zoom + 40))
         setFrameSize(size)
         imageOrigin = CGPoint(x: max(20, (size.width - crop.width * zoom) / 2), y: max(20, (size.height - crop.height * zoom) / 2))
+        let origin = convertToBacking(imageOrigin)
+        imageOrigin = convertFromBacking(CGPoint(x:origin.x.rounded(),y:origin.y.rounded()))
         needsDisplay = true
     }
     private var displayRect: CGRect { CGRect(origin: imageOrigin, size: CGSize(width: document.state.crop.width * zoom, height: document.state.crop.height * zoom)) }
@@ -100,7 +115,7 @@ final class ImageCanvas: NSView, NSTextFieldDelegate {
         if let tileImage {
             let rect = rectInView(tileRect)
             context.saveGState(); context.translateBy(x: rect.minX, y: rect.maxY); context.scaleBy(x: 1, y: -1)
-            context.interpolationQuality = zoom >= 1 ? .none : .high
+            context.interpolationQuality = zoom * backingScale >= 1 ? .none : .high
             context.draw(tileImage, in: CGRect(origin: .zero, size: rect.size)); context.restoreGState()
         }
         context.translateBy(x: imageOrigin.x - document.state.crop.minX * zoom, y: imageOrigin.y - document.state.crop.minY * zoom)
@@ -116,6 +131,8 @@ final class ImageCanvas: NSView, NSTextFieldDelegate {
         requestTile()
     }
     private func requestTile() {
+        let scale = backingScale
+        if tileBackingScale != scale { invalidateTiles(); tileBackingScale = scale }
         let visible = visibleRect.intersection(displayRect)
         guard !visible.isEmpty else { return }
         let a = pointInImage(visible.origin), b = pointInImage(CGPoint(x: visible.maxX, y: visible.maxY))
@@ -123,8 +140,11 @@ final class ImageCanvas: NSView, NSTextFieldDelegate {
         if tileRect.contains(region) && tileImage != nil { return }
         guard requested != region else { return }
         requested = region; tileTask?.cancel()
-        let scale = window?.backingScaleFactor ?? 2
-        let maximum = CGSize(width: region.width * zoom * scale, height: region.height * zoom * scale)
+        // Keep native pixels for ordinary captures, letting Core Graphics perform
+        // the final reduction once. Very long captures stay bounded by the visible
+        // display area, with two samples per display pixel for downscaling.
+        let sampling = min(1, 2 * zoom * scale)
+        let maximum = CGSize(width: region.width * sampling, height: region.height * sampling)
         tileTask = Task { [weak self] in
             guard let self, !Task.isCancelled else { return }
             do {

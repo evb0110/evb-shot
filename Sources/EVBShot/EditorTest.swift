@@ -6,6 +6,7 @@ import PixelCore
 enum EditorTest {
     static func run(folder: URL) async throws {
         try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
+        try await retinaRendering(folder:folder)
         let width = 640, height = 480
         var rgba = Data(count:width*height*4)
         rgba.withUnsafeMutableBytes { bytes in
@@ -195,6 +196,70 @@ enum EditorTest {
         scroll.close()
         print("PASS actual 24 FPS popup mapping, nonactivating scrolling panel, animation rejection followed by automatic pixel-exact scroll recovery through the live frame receiver")
     }
+    static func retinaRendering(folder:URL) async throws {
+        let width = 4096, height = 512
+        var bytes = Data(count:width*height*4)
+        bytes.withUnsafeMutableBytes { raw in
+            let p = raw.bindMemory(to:UInt8.self)
+            for y in 0..<height { for x in 0..<width {
+                let i = (y*width+x)*4, value:UInt8 = x%2 == 0 ? 0 : 255
+                p[i] = value; p[i+1] = value; p[i+2] = value; p[i+3] = 255
+            } }
+        }
+        let image = CGImage(width:width,height:height,bitsPerComponent:8,bitsPerPixel:32,bytesPerRow:width*4,space:CGColorSpace(name:CGColorSpace.sRGB)!,bitmapInfo:CGBitmapInfo(rawValue:CGImageAlphaInfo.last.rawValue),provider:CGDataProvider(data:bytes as CFData)!,decode:nil,shouldInterpolate:false,intent:.defaultIntent)!
+        let source = folder.appendingPathComponent("retina-stripes.png")
+        try CaptureEngine.writePNG(image,to:source)
+        let document = try ImageEditDocument(source:source,width:width,height:height,workspace:folder.appendingPathComponent("retina-project"))
+        let tile = try await document.pixels.tile(CGRect(x:0,y:0,width:width,height:height),maximum:CGSize(width:width,height:height))
+        print("RETINA native viewport requested=4096×512, returned=\(tile.width)×\(tile.height)")
+        try SelfTest.check(tile.width == width && tile.height == height,"4K viewport must not be reduced to 2048 pixels")
+        let native = try PixelFrame(image:tile)
+        try SelfTest.check(native.rgba == bytes,"native viewport preserves every source pixel")
+        let portrait = CGImage(width:height,height:width,bitsPerComponent:8,bitsPerPixel:32,bytesPerRow:height*4,space:CGColorSpace(name:CGColorSpace.sRGB)!,bitmapInfo:CGBitmapInfo(rawValue:CGImageAlphaInfo.last.rawValue),provider:CGDataProvider(data:bytes as CFData)!,decode:nil,shouldInterpolate:false,intent:.defaultIntent)!
+        let portraitSource = folder.appendingPathComponent("retina-portrait.png")
+        try CaptureEngine.writePNG(portrait,to:portraitSource)
+        let portraitDocument = try ImageEditDocument(source:portraitSource,width:height,height:width,workspace:folder.appendingPathComponent("retina-portrait-project"))
+        let portraitTile = try await portraitDocument.pixels.tile(CGRect(x:0,y:0,width:height,height:width),maximum:CGSize(width:height,height:width))
+        let portraitPixels = try PixelFrame(image:portraitTile)
+        try SelfTest.check(portraitTile.height == 4096 && portraitPixels.rgba == bytes,"portrait 4K viewport preserves native resolution and exact pixels")
+        let window = DensityTestWindow(contentRect:CGRect(x:0,y:0,width:1500,height:600),styleMask:[.titled],backing:.buffered,defer:false)
+        window.isReleasedWhenClosed = false
+        let scroll = NSScrollView(frame:CGRect(x:0,y:0,width:1500,height:600))
+        let canvas = ImageCanvas(document:document,preview:NSImage(cgImage:image,size:CGSize(width:width,height:height)))
+        scroll.documentView = canvas; window.contentView = scroll
+        window.contentView!.layoutSubtreeIfNeeded(); scroll.tile(); canvas.relayout()
+        func renderCanvas() -> NSBitmapImageRep {
+            let bitmap = canvas.bitmapImageRepForCachingDisplay(in:canvas.visibleRect)!
+            canvas.cacheDisplay(in:canvas.visibleRect,to:bitmap); return bitmap
+        }
+        _ = renderCanvas(); await canvas.tileTask?.value
+        let singleDensityWidth = canvas.tileImage!.width
+        window.density = 2; canvas.viewDidChangeBackingProperties()
+        try SelfTest.check(canvas.tileImage == nil,"moving to a Retina display discards the lower-density tile")
+        _ = renderCanvas(); await canvas.tileTask?.value
+        let doubleDensityWidth = canvas.tileImage!.width
+        try SelfTest.check(doubleDensityWidth == width && doubleDensityWidth > singleDensityWidth,"Retina Fit uses native 4K pixels instead of magnifying an undersampled tile")
+        canvas.setZoom(3)
+        try SelfTest.check(abs(canvas.zoom * window.backingScaleFactor - 1) < 0.00001,"100% means one original pixel per display pixel")
+        _ = renderCanvas(); await canvas.tileTask?.value
+        let bitmap = renderCanvas(), raster = try PixelFrame(image:bitmap.cgImage!)
+        let rect = canvas.visibleRect, point = canvas.pointInView(CGPoint(x:200,y:128))
+        let scale = Double(bitmap.pixelsWide) / rect.width
+        let x = Int(((point.x-rect.minX)*scale).rounded()), y = Int(((point.y-rect.minY)*scale).rounded())
+        var contrast = 0
+        for offset in 0..<255 {
+            let a = ((y*raster.width+x+offset)*4), b = a+4
+            contrast += abs(Int(raster.rgba[a])-Int(raster.rgba[b]))
+        }
+        let meanContrast = Double(contrast)/255
+        print("RETINA 1x Fit tile=\(singleDensityWidth), 2x Fit tile=\(doubleDensityWidth), raster scale=\(scale), native stripe contrast=\(meanContrast)")
+        try SelfTest.check(abs(scale-2) < 0.001 && meanContrast > 245,"native 2x canvas resolves adjacent black/white source pixels without blur")
+        try bitmap.representation(using:.png,properties:[:])!.write(to:folder.appendingPathComponent("retina-100-percent.png"))
+        window.density = 1; canvas.viewDidChangeBackingProperties()
+        try SelfTest.check(canvas.zoom == 1 && canvas.tileImage == nil,"100% zoom tracks display-density changes and invalidates the old tile")
+        window.close()
+        print("PASS 4096-pixel native viewport, Retina cache refinement, physical-pixel 100% zoom and pixel-aligned native canvas")
+    }
     static func saveAndCheck(_ controller:ResultController,copy:Bool,expectSuccess:Bool = true) async throws -> URL? {
         let window = controller.window!
         var closed = 0
@@ -280,4 +345,10 @@ enum EditorTest {
         try SelfTest.check(tile.width == 257 && tile.height == 101,"native tile at bottom of long image")
         print("PASS 257×70001 annotation and 220×69950 crop exports with bounded strips and bottom viewport access; independent PNG pixel check required")
     }
+}
+
+@MainActor
+private final class DensityTestWindow: NSWindow {
+    var density: CGFloat = 1
+    override var backingScaleFactor: CGFloat { density }
 }
