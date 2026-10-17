@@ -22,12 +22,12 @@ jobs:
         run: |
           for iteration in {1..20}; do
             echo "Native editor iteration $iteration"
-            "dist/EVB Shot.app/Contents/MacOS/EVBShot" --editor-test "$PWD/.devkit/ci-editor-$iteration"
+            bash scripts/run-native-check.sh "dist/EVB Shot.app/Contents/MacOS/EVBShot" --editor-test "$PWD/.devkit/ci-editor-$iteration"
             python3 scripts/verify-editor.py ".devkit/ci-editor-$iteration"
           done
       - name: Verify full-resolution scrolling and media exports
         run: |
-          "dist/EVB Shot.app/Contents/MacOS/EVBShot" --self-test "$PWD/.devkit/ci-core"
+          bash scripts/run-native-check.sh "dist/EVB Shot.app/Contents/MacOS/EVBShot" --self-test "$PWD/.devkit/ci-core"
           python3 scripts/verify-png.py .devkit/ci-core
       - name: Verify landing assets and links
         run: python3 scripts/verify-landing.py
