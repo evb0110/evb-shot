@@ -413,11 +413,17 @@ enum EditorTest {
             canvas.cacheDisplay(in:canvas.visibleRect,to:bitmap); return bitmap
         }
         _ = renderCanvas(); await canvas.tileTask?.value
-        let singleDensityWidth = canvas.tileImage!.width
+        guard let singleDensityTile = canvas.tileImage else { throw ShotError("Initial native tile must finish rendering") }
+        let singleDensityWidth = singleDensityTile.width
         window.density = 2; canvas.viewDidChangeBackingProperties()
         try SelfTest.check(canvas.tileImage == nil,"moving to a Retina display discards the lower-density tile")
-        _ = renderCanvas(); await canvas.tileTask?.value
-        let doubleDensityWidth = canvas.tileImage!.width
+        _ = renderCanvas()
+        guard let densityRender = canvas.tileTask else { throw ShotError("Retina drawing must request a native tile") }
+        canvas.viewDidChangeBackingProperties()
+        try SelfTest.check(!densityRender.isCancelled,"duplicate backing-property notifications at the same density must preserve the in-flight native render")
+        await densityRender.value
+        guard let doubleDensityTile = canvas.tileImage else { throw ShotError("Retina native tile must finish rendering") }
+        let doubleDensityWidth = doubleDensityTile.width
         try SelfTest.check(doubleDensityWidth == width && doubleDensityWidth > singleDensityWidth,"Retina Fit uses native 4K pixels instead of magnifying an undersampled tile")
         canvas.setZoom(3)
         try SelfTest.check(abs(canvas.zoom * window.backingScaleFactor - 1) < 0.00001,"100% means one original pixel per display pixel")

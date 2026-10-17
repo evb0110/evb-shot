@@ -56,7 +56,11 @@ final class ImageCanvas: NSView, NSTextFieldDelegate {
         super.viewDidMoveToWindow(); invalidateTiles(); relayout()
     }
     override func viewDidChangeBackingProperties() {
-        super.viewDidChangeBackingProperties(); invalidateTiles(); relayout()
+        super.viewDidChangeBackingProperties()
+        // AppKit can repeat this notification while the native tile is rendering.
+        // An unchanged density must not cancel that work or discard a ready tile.
+        guard tileBackingScale != backingScale else { return }
+        invalidateTiles(); relayout()
     }
 
     var selectedMark: ImageMark? { document.state.marks.first { $0.id == selected } }
