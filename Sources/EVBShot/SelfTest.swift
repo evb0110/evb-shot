@@ -270,13 +270,43 @@ enum SelfTest {
         try check(board.string(forType: .string) == destination.path, "clipboard contains the full Unicode file path")
         let saved = try Data(contentsOf: destination), original = try Data(contentsOf: source)
         try check(saved == original, "saved bytes")
+        var failed = false
         do {
             try await saveCaptureFile(from: source, to: folder.appendingPathComponent("missing-parent/file.m4a"), copyFilePath: true, pasteboard: board)
-            throw ShotError("Self-test accepted failed save")
-        } catch { try check(board.string(forType: .string) == destination.path, "failed save must not change clipboard") }
+        } catch { failed = true }
+        try check(failed && board.string(forType: .string) == destination.path, "failed save must throw and preserve clipboard")
         try await saveCaptureFile(from: source, to: destination, copyFilePath: false, pasteboard: board)
         try check(board.string(forType: .string) == destination.path, "save-only preserves clipboard")
         print("PASS atomic save, overwrite, full Unicode clipboard path, failed-save clipboard preservation")
+        let automatic = folder.appendingPathComponent("automatic-save",isDirectory:true)
+        try FileManager.default.createDirectory(at:automatic,withIntermediateDirectories:true)
+        let occupied = automatic.appendingPathComponent("same.m4a"), sentinel = Data("existing capture must survive".utf8)
+        try sentinel.write(to:occupied)
+        let concurrent = try await withThrowingTaskGroup(of:URL.self) { group in
+            for _ in 0..<8 { group.addTask { try CaptureFiles.copyToFolder(from:source,folder:automatic,name:"same.m4a") } }
+            var urls = [URL](); for try await url in group { urls.append(url) }; return urls
+        }
+        let preserved = try Data(contentsOf:occupied)
+        try check(Set(concurrent).count == 8 && preserved == sentinel,"concurrent same-name saves never replace existing files")
+        for url in concurrent { let bytes = try Data(contentsOf:url); try check(bytes == original,"each concurrent save contains the complete source") }
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath:automatic.path)
+        try check(!leftovers.contains { $0.hasSuffix(".partial") },"successful saves leave no staging files")
+        let suite = "com.evb.shot.media-save-test.\(UUID().uuidString)", defaults = UserDefaults(suiteName:suite)!
+        defer { defaults.removePersistentDomain(forName:suite) }
+        let settings = CaptureSaveSettings(defaults:defaults); settings.folder = automatic
+        for (filename,kind) in [("audio-only.m4a",MediaKind.audio),("selfie-and-mixed-audio.mov",MediaKind.video)] {
+            let controller = ResultController(CaptureArtifact(url:folder.appendingPathComponent(filename),kind:kind,width:640,height:360,hasAudio:true),saveSettings:settings,pasteboard:board)
+            let buttons = controller.window!.toolbar!.items.first { $0.itemIdentifier.rawValue == "save" }!.view!.subviews.compactMap { $0 as? NSButton }
+            buttons.first { $0.title == "Save & Copy Path" }!.performClick(nil)
+            try check(controller.isSaving && controller.window!.attachedSheet == nil,"media save starts without a save dialog")
+            await controller.saveTask?.value
+            guard let url = controller.lastSavedURL else { throw ShotError("Media save button produced no file") }
+            let asset = AVURLAsset(url:url), audioTracks = try await asset.loadTracks(withMediaType:.audio)
+            try check(board.string(forType:.string) == url.path && !audioTracks.isEmpty,"audio/video button saves playable audio and copies the absolute path")
+            if kind == .video { let videoTracks = try await asset.loadTracks(withMediaType:.video); try check(!videoTracks.isEmpty,"saved recording retains its video track") }
+            controller.close()
+        }
+        print("PASS exclusive same-name concurrent saves and actual audio/video Save & Copy Path buttons with no dialog")
     }
     @MainActor static func renderUI(folder: URL, image: CGImage) throws {
         let recorder = RecordingController(display: CGMainDisplayID())

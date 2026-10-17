@@ -12,8 +12,8 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
     private let dimensions = NSTextField(labelWithString: "")
     private let status = NSTextField(labelWithString: "")
     private let audio = NSButton(checkboxWithTitle: "Include audio", target: nil, action: nil)
-    private let savePath = NSButton(title: "Save & Copy Path…", target: nil, action: nil)
-    private let save = NSButton(title: "Save…", target: nil, action: nil)
+    private let savePath = NSButton(title: "Save & Copy Path", target: nil, action: nil)
+    private let save = NSButton(title: "Save", target: nil, action: nil)
     private let cropApply = NSButton(title: "Crop", target: nil, action: nil)
     private let cropCancel = NSButton(title: "Cancel", target: nil, action: nil)
     private let undoButton = NSButton()
@@ -26,12 +26,18 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
     private var actions = NSStackView()
     private var player: AVPlayer?
     private var resizeObserver: NSObjectProtocol?
-    private var busy = false
+    private let saveSettings: CaptureSaveSettings
+    private let pasteboard: NSPasteboard
+    private(set) var saveTask: Task<Void, Never>?
+    var isSaving: Bool { saveTask != nil }
+    private var busy: Bool { isSaving }
+    private(set) var lastSavedURL: URL?
     private var savedState: ImageEditState?
     var onClose: (() -> Void)?
 
-    init(_ artifact: CaptureArtifact, editingWorkspace: URL? = nil) {
+    init(_ artifact: CaptureArtifact, editingWorkspace: URL? = nil, saveSettings: CaptureSaveSettings = CaptureSaveSettings(), pasteboard: NSPasteboard = .general) {
         self.artifact = artifact
+        self.saveSettings = saveSettings; self.pasteboard = pasteboard
         let window = EditorWindow(contentRect: CGRect(x:0,y:0,width:820,height:580), styleMask:[.titled,.closable,.resizable,.miniaturizable], backing:.buffered, defer:false)
         window.title = "EVBShot"; window.titleVisibility = .hidden; window.toolbarStyle = .unifiedCompact
         window.isReleasedWhenClosed = false; window.hidesOnDeactivate = false
@@ -78,8 +84,8 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
         let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow,for:.horizontal); footer.addArrangedSubview(spacer)
         status.font = .systemFont(ofSize:11); status.textColor = .secondaryLabelColor; status.lineBreakMode = .byTruncatingMiddle
         status.setContentCompressionResistancePriority(.defaultLow,for:.horizontal); footer.addArrangedSubview(status)
-        let reveal = NSButton(image:NSImage(systemSymbolName:"folder",accessibilityDescription:"Show original capture")!,target:self,action:#selector(revealDraft))
-        reveal.bezelStyle = .inline; reveal.isBordered = false; reveal.toolTip = "Show original capture"; footer.addArrangedSubview(reveal)
+        let reveal = NSButton(image:NSImage(systemSymbolName:"folder",accessibilityDescription:"Show capture in Finder")!,target:self,action:#selector(revealDraft))
+        reveal.bezelStyle = .inline; reveal.isBordered = false; reveal.toolTip = "Show capture in Finder"; footer.addArrangedSubview(reveal)
         main.translatesAutoresizingMaskIntoConstraints = false; footer.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(main); content.addSubview(footer)
         let available = NSScreen.underPointer.visibleFrame.insetBy(dx:16,dy:16)
@@ -194,9 +200,9 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
     @objc private func deleteMark() { canvas?.deleteSelection() }
     @objc private func applyCrop() { canvas?.applyCrop(); updateControls() }
     @objc private func cancelCrop() { canvas?.setTool(.select); updateControls() }
-    @objc private func saveAndCopy() { chooseDestination(copy:true) }
-    @objc private func saveOnly() { chooseDestination(copy:false) }
-    @objc private func revealDraft() { NSWorkspace.shared.activateFileViewerSelecting([artifact.url]) }
+    @objc private func saveAndCopy() { saveCapture(copy:true) }
+    @objc private func saveOnly() { saveCapture(copy:false) }
+    @objc private func revealDraft() { NSWorkspace.shared.activateFileViewerSelecting([lastSavedURL ?? artifact.url]) }
     func windowShouldClose(_ sender:NSWindow) -> Bool {
         canvas?.commitText()
         if busy { return false }
@@ -213,29 +219,27 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
         if let resizeObserver { NotificationCenter.default.removeObserver(resizeObserver) }
         onClose?()
     }
-    private func chooseDestination(copy:Bool) {
+    private func saveCapture(copy:Bool) {
+        guard !busy else { return }
         canvas?.commitText()
         guard let window else { return }
-        let panel = NSSavePanel(); panel.nameFieldStringValue = CaptureFiles.suggestedName(artifact.kind)
-        panel.allowedContentTypes = [artifact.kind == .image ? .png : artifact.kind == .video ? .quickTimeMovie : .mpeg4Audio]
-        panel.canCreateDirectories = true
-        panel.directoryURL = UserDefaults.standard.url(forKey:"saveFolder") ?? FileManager.default.urls(for:.picturesDirectory,in:.userDomainMask).first
-        panel.beginSheetModal(for:window) { [weak self] response in
-            guard let self, response == .OK, let destination = panel.url else { return }
-            self.busy = true; self.canvas?.editingEnabled = false; self.updateControls(); self.status.stringValue = "Saving…"
-            Task { [self] in
-                do {
-                    let source:URL
-                    if let document = self.editDocument { source = try await document.export() }
-                    else if self.artifact.kind == .image { source = self.artifact.url }
-                    else { source = try await MediaExport.normalized(self.artifact.url,includeAudio:self.artifact.kind != .video || self.audio.state == .on || !self.artifact.hasAudio) }
-                    try await saveCaptureFile(from:source,to:destination,copyFilePath:copy)
-                    UserDefaults.standard.set(destination.deletingLastPathComponent(),forKey:"saveFolder")
-                    self.savedState = self.editDocument?.state; window.isDocumentEdited = false
-                    self.status.stringValue = copy ? "Saved · file path copied" : "Saved"
-                } catch { self.status.stringValue = error.localizedDescription }
-                self.busy = false; self.canvas?.editingEnabled = true; self.updateControls()
+        let folder = saveSettings.folder
+        let includeAudio = artifact.kind != .video || audio.state == .on || !artifact.hasAudio
+        canvas?.editingEnabled = false; audio.isEnabled = false; status.stringValue = "Saving…"
+        saveTask = Task { [self] in
+            defer {
+                saveTask = nil; canvas?.editingEnabled = true; audio.isEnabled = true; updateControls()
             }
+            do {
+                let source:URL
+                if let document = editDocument { source = try await document.export() }
+                else if artifact.kind == .image { source = artifact.url }
+                else { source = try await MediaExport.normalized(artifact.url,includeAudio:includeAudio) }
+                lastSavedURL = try await saveCaptureFile(from:source,toFolder:folder,kind:artifact.kind,copyFilePath:copy,pasteboard:pasteboard)
+                savedState = editDocument?.state; window.isDocumentEdited = false
+                status.stringValue = copy ? "Saved · file path copied" : "Saved"
+            } catch { status.stringValue = error.localizedDescription }
         }
+        updateControls()
     }
 }

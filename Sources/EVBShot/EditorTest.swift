@@ -20,7 +20,15 @@ enum EditorTest {
         try rgba.write(to:folder.appendingPathComponent("reference.rgba"))
         let original = try Data(contentsOf:source)
         let artifact = CaptureArtifact(url:source,kind:.image,width:width,height:height,hasAudio:false,preview:NSImage(cgImage:image,size:CGSize(width:width,height:height)))
-        let controller = ResultController(artifact,editingWorkspace:folder.appendingPathComponent("project"))
+        let board = NSPasteboard(name:NSPasteboard.Name("com.evb.shot.editor-test.\(UUID().uuidString)"))
+        let suite = "com.evb.shot.settings-test.\(UUID().uuidString)", defaults = UserDefaults(suiteName: suite)!
+        defer { board.releaseGlobally(); defaults.removePersistentDomain(forName: suite) }
+        let settings = CaptureSaveSettings(defaults: defaults)
+        try SelfTest.check(settings.folder == CaptureSaveSettings.defaultFolder, "new installations default to Pictures/EVBShot")
+        let preferences = SettingsController(settings: settings)
+        preferences.setSaveFolder(folder.appendingPathComponent("Saved captures - հայերեն",isDirectory:true))
+        try SelfTest.check(CaptureSaveSettings(defaults: UserDefaults(suiteName: suite)!).folder == settings.folder, "save folder survives settings reconstruction")
+        let controller = ResultController(artifact,editingWorkspace:folder.appendingPathComponent("project"),saveSettings:settings,pasteboard:board)
         let canvas = controller.canvas!, document = controller.editDocument!
         let toolbarItems = controller.window!.toolbar!.items
         print("EDITOR TOOLBAR \(toolbarItems.map { "\($0.itemIdentifier.rawValue):\(String(describing:$0.view?.frame))" })")
@@ -87,11 +95,34 @@ enum EditorTest {
         document.history.redo()
         let exported = try await document.export()
         try CaptureFiles.atomicCopy(from:exported,to:folder.appendingPathComponent("edited.png"))
-        let board = NSPasteboard(name:NSPasteboard.Name("com.evb.shot.editor-test.\(UUID().uuidString)"))
-        defer { board.releaseGlobally() }
-        let saved = folder.appendingPathComponent("Saved annotated capture.png")
-        try await saveCaptureFile(from:exported,to:saved,copyFilePath:true,pasteboard:board)
-        try SelfTest.check(board.string(forType:.string) == saved.path,"edited image saves and copies its full file path")
+        let saveButtons = toolbarItems.first { $0.itemIdentifier.rawValue == "save" }!.view!.subviews.compactMap { $0 as? NSButton }
+        let copyButton = saveButtons.first { $0.title == "Save & Copy Path" }!, saveButton = saveButtons.first { $0.title == "Save" }!
+        copyButton.performClick(nil)
+        try SelfTest.check(controller.isSaving && controller.window!.attachedSheet == nil,"Save & Copy Path starts immediately without a dialog")
+        await controller.saveTask?.value
+        guard let saved = controller.lastSavedURL else { throw ShotError("Editor did not save its capture") }
+        try SelfTest.check(saved.deletingLastPathComponent() == settings.folder && board.string(forType:.string) == saved.path,"edited image saves in the configured folder and copies its full path")
+        let buttonOutput = try Data(contentsOf:saved), expectedOutput = try Data(contentsOf:exported)
+        try SelfTest.check(buttonOutput == expectedOutput,"button saves the cropped, annotated native export")
+        preferences.setSaveFolder(folder.appendingPathComponent("Second save folder",isDirectory:true))
+        saveButton.performClick(nil); await controller.saveTask?.value
+        let second = controller.lastSavedURL!
+        try SelfTest.check(second.deletingLastPathComponent() == settings.folder && second != saved && board.string(forType:.string) == saved.path,"Save uses changed settings immediately and preserves the clipboard")
+        saveButton.performClick(nil); await controller.saveTask?.value
+        try SelfTest.check(controller.lastSavedURL != second && FileManager.default.fileExists(atPath:second.path),"repeated Save preserves prior captures")
+        let previous = controller.lastSavedURL, sentinel = "clipboard must survive failed Save"
+        board.clearContents(); board.setString(sentinel,forType:.string)
+        preferences.setSaveFolder(source.appendingPathComponent("not-a-directory"))
+        copyButton.performClick(nil); await controller.saveTask?.value
+        try SelfTest.check(controller.lastSavedURL == previous && board.string(forType:.string) == sentinel && saveButton.isEnabled,"failed direct save preserves prior capture and clipboard, then re-enables saving")
+        preferences.setSaveFolder(saved.deletingLastPathComponent())
+        try await renderWindow(preferences.window!,name:"save-settings",folder:folder)
+        try SelfTest.check(preferences.window!.frame.width == 480,"long save folder paths keep Settings compact")
+        let settingsButtons = preferences.window!.contentView!.subviews[0].subviews.compactMap { $0 as? NSStackView }.flatMap { $0.subviews }.compactMap { $0 as? NSButton }
+        settingsButtons.first { $0.title == "Use Default Folder" }!.performClick(nil)
+        try SelfTest.check(settings.folder.path == CaptureSaveSettings.defaultFolder.path,"Use Default Folder restores Pictures/EVBShot")
+        try await renderWindow(preferences.window!,name:"default-save-settings",folder:folder)
+        print("PASS actual Save/Save & Copy Path buttons: no dialog, persistent and changed folder, native edited pixels, distinct repeated saves, clipboard preservation on Save/failure")
         let outputSource = CGImageSourceCreateWithURL(exported as CFURL,nil)!
         let decoded = CGImageSourceCreateImageAtIndex(outputSource,0,nil)!
         try SelfTest.check(decoded.width == 550 && decoded.height == 370,"exported crop dimensions")
@@ -167,7 +198,10 @@ enum EditorTest {
         try bitmap.representation(using:.png,properties:[:])!.write(to:folder.appendingPathComponent("recording-controls.png"))
     }
     static func render(_ controller:ResultController,name:String,folder:URL) async throws {
-        guard let view = controller.window?.contentView?.superview else { throw ShotError("Missing editor frame") }
+        try await renderWindow(controller.window!,name:name,folder:folder)
+    }
+    static func renderWindow(_ window:NSWindow,name:String,folder:URL) async throws {
+        guard let view = window.contentView?.superview else { throw ShotError("Missing window frame") }
         view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
         guard let image = view.bitmapImageRepForCachingDisplay(in:view.bounds) else { throw ShotError("Cannot render editor frame") }
         view.cacheDisplay(in:view.bounds,to:image)

@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var scrolling: ScrollController?
     private var recording: RecordingController?
     private var results: [ResultController] = []
+    private var settings: SettingsController?
     private weak var aboutWindow: NSWindow?
     private var closeObserver: NSObjectProtocol?
     private var busy = false
@@ -18,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let icon = Bundle.main.image(forResource:"AppIcon") { NSApp.applicationIconImage = icon }
         let mainMenu = NSMenu(), appItem = NSMenuItem(), appMenu = NSMenu()
         appMenu.addItem(item("About EVBShot",#selector(about),symbol:"info.circle"))
+        appMenu.addItem(item("Settings…",#selector(showSettings),symbol:"gearshape"))
         appMenu.addItem(.separator()); appMenu.addItem(item("Quit EVBShot",#selector(quit),symbol:"power"))
         appItem.submenu = appMenu; mainMenu.addItem(appItem); NSApp.mainMenu = mainMenu
         closeObserver = NotificationCenter.default.addObserver(forName:NSWindow.willCloseNotification,object:nil,queue:.main) { [weak self] note in
@@ -51,12 +53,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
     private func updateActivationPolicy() {
-        let hasWorkspace = !results.isEmpty || recording != nil || picker != nil || aboutWindow != nil
+        let hasWorkspace = !results.isEmpty || recording != nil || picker != nil || aboutWindow != nil || settings != nil
         NSApp.setActivationPolicy(hasWorkspace ? .regular : .accessory)
     }
     func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows:Bool) -> Bool {
         if let result = results.last { result.window?.deminiaturize(nil); result.showWindow(nil) }
         else if let recording { recording.showWindow(nil) }
+        else if let settings { settings.showWindow(nil) }
         else if let aboutWindow { aboutWindow.makeKeyAndOrderFront(nil) }
         else { statusItem.button?.performClick(nil) }
         return true
@@ -71,7 +74,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let record = item(recording?.isRecording == true ? "Stop Recording & Review" : "Record Screen / Audio…", #selector(showRecorder),symbol:recording?.isRecording == true ? "stop.circle" : "record.circle")
         record.isEnabled = !busy || recording != nil; menu.addItem(record)
         menu.addItem(.separator())
-        menu.addItem(item("Open Captures Folder", #selector(openDrafts),symbol:"folder"))
+        menu.addItem(item("Open Captures Folder", #selector(openCaptures),symbol:"folder"))
+        menu.addItem(item("Open Drafts Folder", #selector(openDrafts),symbol:"tray.full"))
+        menu.addItem(item("Settings…", #selector(showSettings),symbol:"gearshape"))
         menu.addItem(item("About EVBShot", #selector(about),symbol:"info.circle"))
         let quit = item("Quit EVBShot", #selector(quit),symbol:"power"); quit.isEnabled = !busy; menu.addItem(quit)
         statusItem.menu = menu
@@ -148,6 +153,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do { try FileManager.default.createDirectory(at: CaptureFiles.root, withIntermediateDirectories: true); NSWorkspace.shared.open(CaptureFiles.root) }
         catch { presentError(error) }
     }
+    @objc private func openCaptures() {
+        do {
+            let folder = CaptureSaveSettings().folder
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(folder)
+        } catch { presentError(error) }
+    }
+    @objc private func showSettings() {
+        if settings == nil {
+            let controller = SettingsController()
+            controller.onClose = { [weak self] in self?.settings = nil; self?.updateActivationPolicy() }
+            settings = controller
+        }
+        updateActivationPolicy(); settings?.window?.deminiaturize(nil); settings?.showWindow(nil); NSApp.activate(ignoringOtherApps: true)
+    }
     @objc private func about() {
         NSApp.setActivationPolicy(.regular); NSApp.activate(ignoringOtherApps:true)
         let credits = NSMutableAttributedString(string:"Eugene Barsky\n\nNative screenshots and screen recording.\nYour captures stay on this Mac.\n\n",attributes:[.font:NSFont.systemFont(ofSize:12)])
@@ -160,7 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc private func quit() { NSApp.terminate(nil) }
     func applicationShouldTerminate(_ sender:NSApplication) -> NSApplication.TerminateReply {
-        guard recording?.hasActiveWork != true, scrolling == nil, !(busy && recording == nil && picker == nil) else { return .terminateCancel }
+        guard recording?.hasActiveWork != true, scrolling == nil, !results.contains(where: { $0.isSaving }), !(busy && recording == nil && picker == nil) else { return .terminateCancel }
         for result in results {
             result.canvas?.commitText()
             if let error = result.editDocument?.persistenceError { presentError(error); return .terminateCancel }
