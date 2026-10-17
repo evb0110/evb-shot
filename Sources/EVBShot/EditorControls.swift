@@ -4,7 +4,21 @@ import AppKit
 @MainActor
 final class EditorWindow: NSWindow {
     var historyCommand: ((Bool) -> Void)?
+    var interactionBlocked = false
+    override func sendEvent(_ event: NSEvent) {
+        if interactionBlocked {
+            switch event.type {
+            case .leftMouseDown, .leftMouseUp, .leftMouseDragged, .rightMouseDown, .rightMouseUp, .rightMouseDragged,
+                 .otherMouseDown, .otherMouseUp, .otherMouseDragged, .keyDown, .keyUp, .scrollWheel,
+                 .magnify, .rotate, .swipe, .smartMagnify:
+                return
+            default: break
+            }
+        }
+        super.sendEvent(event)
+    }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if interactionBlocked { return true }
         let modifiers = event.modifierFlags.intersection([.command,.shift,.option,.control])
         guard event.type == .keyDown, event.charactersIgnoringModifiers?.lowercased() == "z",
               modifiers == [.command] || modifiers == [.command,.shift], attachedSheet == nil else {

@@ -95,26 +95,30 @@ enum EditorTest {
         document.history.redo()
         let exported = try await document.export()
         try CaptureFiles.atomicCopy(from:exported,to:folder.appendingPathComponent("edited.png"))
-        let saveButtons = toolbarItems.first { $0.itemIdentifier.rawValue == "save" }!.view!.subviews.compactMap { $0 as? NSButton }
-        let copyButton = saveButtons.first { $0.title == "Save & Copy Path" }!, saveButton = saveButtons.first { $0.title == "Save" }!
-        copyButton.performClick(nil)
-        try SelfTest.check(controller.isSaving && controller.window!.attachedSheet == nil,"Save & Copy Path starts immediately without a dialog")
-        await controller.saveTask?.value
-        guard let saved = controller.lastSavedURL else { throw ShotError("Editor did not save its capture") }
+        func saveController() -> ResultController {
+            ResultController(artifact,editingWorkspace:folder.appendingPathComponent("project"),saveSettings:settings,pasteboard:board)
+        }
+        let firstSave = saveController()
+        let saved = try await saveAndCheck(firstSave,copy:true)!
         try SelfTest.check(saved.deletingLastPathComponent() == settings.folder && board.string(forType:.string) == saved.path,"edited image saves in the configured folder and copies its full path")
         let buttonOutput = try Data(contentsOf:saved), expectedOutput = try Data(contentsOf:exported)
         try SelfTest.check(buttonOutput == expectedOutput,"button saves the cropped, annotated native export")
+        let secondSave = saveController()
         preferences.setSaveFolder(folder.appendingPathComponent("Second save folder",isDirectory:true))
-        saveButton.performClick(nil); await controller.saveTask?.value
-        let second = controller.lastSavedURL!
+        let second = try await saveAndCheck(secondSave,copy:false)!
         try SelfTest.check(second.deletingLastPathComponent() == settings.folder && second != saved && board.string(forType:.string) == saved.path,"Save uses changed settings immediately and preserves the clipboard")
-        saveButton.performClick(nil); await controller.saveTask?.value
-        try SelfTest.check(controller.lastSavedURL != second && FileManager.default.fileExists(atPath:second.path),"repeated Save preserves prior captures")
-        let previous = controller.lastSavedURL, sentinel = "clipboard must survive failed Save"
+        let third = try await saveAndCheck(saveController(),copy:false)!
+        try SelfTest.check(third != second && FileManager.default.fileExists(atPath:second.path),"repeated Save preserves prior captures")
+        let sentinel = "clipboard must survive failed Save"
         board.clearContents(); board.setString(sentinel,forType:.string)
         preferences.setSaveFolder(source.appendingPathComponent("not-a-directory"))
-        copyButton.performClick(nil); await controller.saveTask?.value
-        try SelfTest.check(controller.lastSavedURL == previous && board.string(forType:.string) == sentinel && saveButton.isEnabled,"failed direct save preserves prior capture and clipboard, then re-enables saving")
+        let failedSave = saveController()
+        _ = try await saveAndCheck(failedSave,copy:true,expectSuccess:false)
+        _ = try await saveAndCheck(failedSave,copy:false,expectSuccess:false)
+        try SelfTest.check(failedSave.lastSavedURL == nil && board.string(forType:.string) == sentinel && failedSave.canvas!.editingEnabled,"failed direct save preserves edits and clipboard, then re-enables editing")
+        // The same editor must recover from a failed save and dismiss on success.
+        preferences.setSaveFolder(saved.deletingLastPathComponent())
+        _ = try await saveAndCheck(failedSave,copy:false)
         preferences.setSaveFolder(saved.deletingLastPathComponent())
         try await renderWindow(preferences.window!,name:"save-settings",folder:folder)
         try SelfTest.check(preferences.window!.frame.width == 480,"long save folder paths keep Settings compact")
@@ -122,7 +126,7 @@ enum EditorTest {
         settingsButtons.first { $0.title == "Use Default Folder" }!.performClick(nil)
         try SelfTest.check(settings.folder.path == CaptureSaveSettings.defaultFolder.path,"Use Default Folder restores Pictures/EVBShot")
         try await renderWindow(preferences.window!,name:"default-save-settings",folder:folder)
-        print("PASS actual Save/Save & Copy Path buttons: no dialog, persistent and changed folder, native edited pixels, distinct repeated saves, clipboard preservation on Save/failure")
+        print("PASS actual Save/Save & Copy Path buttons: stable toolbar while saving, close exactly once after success, stay open on failure, persistent folder, native edited pixels and clipboard preservation")
         let outputSource = CGImageSourceCreateWithURL(exported as CFURL,nil)!
         let decoded = CGImageSourceCreateImageAtIndex(outputSource,0,nil)!
         try SelfTest.check(decoded.width == 550 && decoded.height == 370,"exported crop dimensions")
@@ -190,6 +194,34 @@ enum EditorTest {
         try SelfTest.check(recoveredPixels == expectedPixels,"continuous scrolling recovery retains every original native pixel")
         scroll.close()
         print("PASS actual 24 FPS popup mapping, nonactivating scrolling panel, animation rejection followed by automatic pixel-exact scroll recovery through the live frame receiver")
+    }
+    static func saveAndCheck(_ controller:ResultController,copy:Bool,expectSuccess:Bool = true) async throws -> URL? {
+        let window = controller.window!
+        var closed = 0
+        controller.onClose = { closed += 1 }
+        window.contentView!.superview!.layoutSubtreeIfNeeded()
+        let toolbar = window.toolbar!.items
+        let buttons = toolbar.first { $0.itemIdentifier.rawValue == "save" }!.view!.subviews.compactMap { $0 as? NSButton }
+        let button = buttons.first { $0.title == (copy ? "Save & Copy Path" : "Save") }!
+        let swatch = toolbar.first { $0.itemIdentifier.rawValue == "style" }?.view?.subviews.first { $0 is AnnotationColorButton }
+        func pixels(_ view:NSView?) throws -> Data? {
+            guard let view else { return nil }
+            let bitmap = view.bitmapImageRepForCachingDisplay(in:view.bounds)!
+            view.cacheDisplay(in:view.bounds,to:bitmap)
+            return try PixelFrame(image:bitmap.cgImage!).rgba
+        }
+        let before = try pixels(swatch)
+        button.performClick(nil)
+        try SelfTest.check(controller.isSaving && window.attachedSheet == nil,"save starts immediately without a dialog")
+        let during = try pixels(swatch)
+        await controller.saveTask?.value
+        print("SAVE REGRESSION copy=\(copy) success=\(expectSuccess) toolbar pixels stable=\(before == during) close callbacks=\(closed)")
+        try SelfTest.check(before == during,"saving must not dim and restore the annotation toolbar")
+        try SelfTest.check(closed == (expectSuccess ? 1 : 0),"successful save must close exactly once; failed save must leave the editor open")
+        try SelfTest.check(!controller.isSaving,"save lifecycle completes")
+        if expectSuccess { try SelfTest.check(controller.lastSavedURL != nil,"successful dismissal follows a completed file save") }
+        else { try SelfTest.check(button.isEnabled,"failed saving leaves the editor usable") }
+        return controller.lastSavedURL
     }
     static func renderRecorder(_ recorder:RecordingController,folder:URL) async throws {
         let view = recorder.window!.contentView!.superview!

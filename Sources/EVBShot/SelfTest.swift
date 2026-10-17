@@ -296,11 +296,7 @@ enum SelfTest {
         let settings = CaptureSaveSettings(defaults:defaults); settings.folder = automatic
         for (filename,kind) in [("audio-only.m4a",MediaKind.audio),("selfie-and-mixed-audio.mov",MediaKind.video)] {
             let controller = ResultController(CaptureArtifact(url:folder.appendingPathComponent(filename),kind:kind,width:640,height:360,hasAudio:true),saveSettings:settings,pasteboard:board)
-            let buttons = controller.window!.toolbar!.items.first { $0.itemIdentifier.rawValue == "save" }!.view!.subviews.compactMap { $0 as? NSButton }
-            buttons.first { $0.title == "Save & Copy Path" }!.performClick(nil)
-            try check(controller.isSaving && controller.window!.attachedSheet == nil,"media save starts without a save dialog")
-            await controller.saveTask?.value
-            guard let url = controller.lastSavedURL else { throw ShotError("Media save button produced no file") }
+            guard let url = try await EditorTest.saveAndCheck(controller,copy:true) else { throw ShotError("Media save button produced no file") }
             let asset = AVURLAsset(url:url), audioTracks = try await asset.loadTracks(withMediaType:.audio)
             try check(board.string(forType:.string) == url.path && !audioTracks.isEmpty,"audio/video button saves playable audio and copies the absolute path")
             if kind == .video { let videoTracks = try await asset.loadTracks(withMediaType:.video); try check(!videoTracks.isEmpty,"saved recording retains its video track") }

@@ -160,6 +160,9 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
         return item
     }
     func updateControls() {
+        // Keep the displayed toolbar stable while export runs. The window blocks
+        // input until it closes or a failed save restores editing.
+        guard !busy else { return }
         if let document = editDocument, let canvas {
             let rect = canvas.pendingCrop ?? document.state.crop
             dimensions.stringValue = "\(Int(rect.width).formatted()) × \(Int(rect.height).formatted()) px"
@@ -191,6 +194,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
         canvas?.setTool(tool); updateControls()
     }
     @objc private func styleChanged() {
+        guard !busy else { return }
         canvas?.color = MarkColor(color.color); canvas?.thickness = CGFloat([2,4,6,10,16][stroke.indexOfSelectedItem])
         canvas?.fontSize = CGFloat([16,24,32,48,64,96][font.indexOfSelectedItem]); canvas?.updateStyle()
     }
@@ -225,10 +229,14 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
         guard let window else { return }
         let folder = saveSettings.folder
         let includeAudio = artifact.kind != .video || audio.state == .on || !artifact.hasAudio
-        canvas?.editingEnabled = false; audio.isEnabled = false; status.stringValue = "Saving…"
+        canvas?.editingEnabled = false
+        (window as? EditorWindow)?.interactionBlocked = true
+        status.stringValue = "Saving…"
         saveTask = Task { [self] in
+            var succeeded = false
             defer {
-                saveTask = nil; canvas?.editingEnabled = true; audio.isEnabled = true; updateControls()
+                saveTask = nil; (window as? EditorWindow)?.interactionBlocked = false
+                if !succeeded { canvas?.editingEnabled = true; updateControls() }
             }
             do {
                 let source:URL
@@ -237,9 +245,9 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
                 else { source = try await MediaExport.normalized(artifact.url,includeAudio:includeAudio) }
                 lastSavedURL = try await saveCaptureFile(from:source,toFolder:folder,kind:artifact.kind,copyFilePath:copy,pasteboard:pasteboard)
                 savedState = editDocument?.state; window.isDocumentEdited = false
-                status.stringValue = copy ? "Saved · file path copied" : "Saved"
+                succeeded = true
+                window.close()
             } catch { status.stringValue = error.localizedDescription }
         }
-        updateControls()
     }
 }
