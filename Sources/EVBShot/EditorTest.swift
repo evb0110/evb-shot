@@ -6,6 +6,7 @@ import PixelCore
 enum EditorTest {
     static func run(folder: URL) async throws {
         try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
+        try statusIcon(folder:folder)
         try await retinaRendering(folder:folder)
         let width = 640, height = 480
         var rgba = Data(count:width*height*4)
@@ -43,13 +44,16 @@ enum EditorTest {
         }
         drag(.arrow,CGPoint(x:100,y:100),CGPoint(x:240,y:180))
         try await render(controller,name:"selected-arrow",folder:folder)
-        let arrowBitmap = canvas.bitmapImageRepForCachingDisplay(in:canvas.bounds)!
-        canvas.cacheDisplay(in:canvas.bounds,to:arrowBitmap)
-        let arrowPixels = try PixelFrame(image:arrowBitmap.cgImage!)
-        let bluePixels = arrowPixels.rgba.withUnsafeBytes { data -> Int in
-            let bytes = data.bindMemory(to:UInt8.self)
-            return stride(from:0,to:bytes.count,by:4).filter { bytes[$0] < 80 && bytes[$0+1] > 80 && bytes[$0+1] < 210 && bytes[$0+2] > 220 }.count
+        func selectionBluePixels() throws -> Int {
+            let bitmap = canvas.bitmapImageRepForCachingDisplay(in:canvas.bounds)!
+            canvas.cacheDisplay(in:canvas.bounds,to:bitmap)
+            let frame = try PixelFrame(image:bitmap.cgImage!)
+            return frame.rgba.withUnsafeBytes { data -> Int in
+                let bytes = data.bindMemory(to:UInt8.self)
+                return stride(from:0,to:bytes.count,by:4).filter { bytes[$0] < 80 && bytes[$0+1] > 80 && bytes[$0+1] < 210 && bytes[$0+2] > 220 }.count
+            }
         }
+        let bluePixels = try selectionBluePixels()
         func shortcut(_ redo:Bool, modifiers:NSEvent.ModifierFlags? = nil) -> Bool {
             let flags = modifiers ?? (redo ? [.command,.shift] : [.command])
             let event = NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:flags,timestamp:0,windowNumber:controller.window!.windowNumber,context:nil,characters:redo ? "Z" : "z",charactersIgnoringModifiers:"z",isARepeat:false,keyCode:6)!
@@ -59,11 +63,14 @@ enum EditorTest {
         let handledRedo = shortcut(true), redoCount = document.state.marks.count
         print("EDITOR REGRESSION arrow blue pixels=\(bluePixels); Cmd-Z handled=\(handledUndo) marks=\(undoCount); Shift-Cmd-Z handled=\(handledRedo) marks=\(redoCount)")
         try SelfTest.check(handledUndo && undoCount == 0 && handledRedo && redoCount == 1,"window key equivalents must undo and redo the arrow")
-        try SelfTest.check(bluePixels < 400,"selected arrow must have only endpoint handles, no blue bounding box")
+        try SelfTest.check(bluePixels == 0,"drawing an arrow leaves no blue outlines or endpoint boxes")
         let beforeUnrelated = document.state
         _ = shortcut(false,modifiers:[.command,.option])
         try SelfTest.check(document.state == beforeUnrelated,"other modifier combinations must not invoke undo")
         drag(.rectangle,CGPoint(x:300,y:100),CGPoint(x:480,y:260))
+        let rectangleBlue = try selectionBluePixels()
+        try SelfTest.check(rectangleBlue == 0,"drawing a rectangle leaves no blue border or corner boxes")
+        try await render(controller,name:"drawn-shapes",folder:folder)
         canvas.setTool(.text); canvas.beginGesture(at:canvas.pointInView(CGPoint(x:90,y:320)))
         guard let fieldEditor = controller.window!.firstResponder as? NSTextView, fieldEditor.isFieldEditor else { throw ShotError("Annotation text must use the native field editor") }
         fieldEditor.insertText("Native pixels",replacementRange:NSRange(location:NSNotFound,length:0))
@@ -80,7 +87,16 @@ enum EditorTest {
         document.history.undo(); try SelfTest.check(document.state.marks[2].text == "Native pixels","undo restores deleted editable text")
         drag(.select,CGPoint(x:150,y:130),CGPoint(x:180,y:140))
         try SelfTest.check(abs(document.state.marks[0].start.x-130)<0.01,"select and move arrow")
+        canvas.beginGesture(at:canvas.pointInView(CGPoint(x:270,y:190)))
+        canvas.endGesture(at:canvas.pointInView(CGPoint(x:290,y:205)))
+        try SelfTest.check(document.state.marks[0].end == CGPoint(x:290,y:205),"neutral arrow endpoint remains resizable")
+        let selectedArrowBlue = try selectionBluePixels()
+        try SelfTest.check(selectedArrowBlue == 0,"selected arrow has neutral handles without blue decorations")
+        document.history.undo()
         canvas.setTool(.select); canvas.beginGesture(at:canvas.pointInView(CGPoint(x:330,y:150))); canvas.endGesture(at:canvas.pointInView(CGPoint(x:330,y:150)))
+        let selectedRectangleBlue = try selectionBluePixels()
+        try SelfTest.check(selectedRectangleBlue == 0,"selected rectangle has neutral handles without a blue bounding box")
+        try await render(controller,name:"selected-rectangle",folder:folder)
         canvas.beginGesture(at:canvas.pointInView(CGPoint(x:480,y:260))); canvas.endGesture(at:canvas.pointInView(CGPoint(x:520,y:280)))
         try SelfTest.check(abs(document.state.marks[1].end.x-520)<0.01,"resize rectangle handle")
         document.history.undo(); try SelfTest.check(abs(document.state.marks[1].end.x-480)<0.01,"native undo")
@@ -101,13 +117,13 @@ enum EditorTest {
         }
         let firstSave = saveController()
         let saved = try await saveAndCheck(firstSave,copy:true)!
-        try SelfTest.check(saved.deletingLastPathComponent() == settings.folder && board.string(forType:.string) == saved.path,"edited image saves in the configured folder and copies its full path")
+        try SelfTest.check(saved.deletingLastPathComponent() == settings.folder && board.string(forType:.string) == "'\(saved.path)'","edited image saves in the configured folder and copies its full path")
         let buttonOutput = try Data(contentsOf:saved), expectedOutput = try Data(contentsOf:exported)
         try SelfTest.check(buttonOutput == expectedOutput,"button saves the cropped, annotated native export")
         let secondSave = saveController()
         preferences.setSaveFolder(folder.appendingPathComponent("Second save folder",isDirectory:true))
         let second = try await saveAndCheck(secondSave,copy:false)!
-        try SelfTest.check(second.deletingLastPathComponent() == settings.folder && second != saved && board.string(forType:.string) == saved.path,"Save uses changed settings immediately and preserves the clipboard")
+        try SelfTest.check(second.deletingLastPathComponent() == settings.folder && second != saved && board.string(forType:.string) == "'\(saved.path)'","Save uses changed settings immediately and preserves the clipboard")
         let third = try await saveAndCheck(saveController(),copy:false)!
         try SelfTest.check(third != second && FileManager.default.fileExists(atPath:second.path),"repeated Save preserves prior captures")
         let sentinel = "clipboard must survive failed Save"
@@ -195,6 +211,27 @@ enum EditorTest {
         try SelfTest.check(recoveredPixels == expectedPixels,"continuous scrolling recovery retains every original native pixel")
         scroll.close()
         print("PASS actual 24 FPS popup mapping, nonactivating scrolling panel, animation rejection followed by automatic pixel-exact scroll recovery through the live frame receiver")
+    }
+    static func statusIcon(folder:URL) throws {
+        for recording in [false,true] {
+            let icon = StatusIcon.image(recording:recording)
+            try SelfTest.check(icon.size == CGSize(width:22,height:22) && icon.isTemplate,"menu icon has an explicit 22-point template size")
+            let bitmap = NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:44,pixelsHigh:44,bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0)!
+            bitmap.size = icon.size
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep:bitmap)
+            NSGraphicsContext.current!.cgContext.clear(CGRect(origin:.zero,size:icon.size))
+            icon.draw(in:CGRect(origin:.zero,size:icon.size))
+            NSGraphicsContext.restoreGraphicsState()
+            let frame = try PixelFrame(image:bitmap.cgImage!)
+            var minX = 44, minY = 44, maxX = -1, maxY = -1
+            for y in 0..<44 { for x in 0..<44 where frame.rgba[(y*44+x)*4+3] > 32 {
+                minX = min(minX,x); maxX = max(maxX,x); minY = min(minY,y); maxY = max(maxY,y)
+            } }
+            try SelfTest.check(maxX-minX+1 >= 37 && maxY-minY+1 >= 37,"menu icon uses at least 37×37 physical pixels on a Retina display")
+            try bitmap.representation(using:.png,properties:[:])!.write(to:folder.appendingPathComponent(recording ? "status-recording.png" : "status-idle.png"))
+            print("PASS menu icon recording=\(recording), visible ink=\(maxX-minX+1)×\(maxY-minY+1) Retina pixels")
+        }
     }
     static func retinaRendering(folder:URL) async throws {
         let width = 4096, height = 512

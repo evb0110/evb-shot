@@ -112,7 +112,8 @@ func presentError(_ error: Error) {
 @MainActor
 func copyPath(_ url: URL, pasteboard: NSPasteboard = .general) throws {
     pasteboard.clearContents()
-    guard pasteboard.setString(url.path, forType: .string) else {
+    let quoted = "'" + url.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    guard pasteboard.setString(quoted, forType: .string) else {
         throw ShotError("The file was saved, but its path could not be copied. Saved file: \(url.path)")
     }
 }

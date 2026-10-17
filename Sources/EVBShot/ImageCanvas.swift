@@ -157,19 +157,21 @@ final class ImageCanvas: NSView, NSTextFieldDelegate {
     private func handles(_ rect: CGRect) -> [CGPoint] {
         [CGPoint(x: rect.minX,y: rect.minY), CGPoint(x: rect.maxX,y: rect.minY), CGPoint(x: rect.maxX,y: rect.maxY), CGPoint(x: rect.minX,y: rect.maxY)]
     }
-    private func drawHandle(_ point: CGPoint) {
+    private func drawHandle(_ point: CGPoint, color: NSColor = .controlAccentColor) {
         let p = pointInView(point), r = CGRect(x: p.x-4, y: p.y-4, width: 8, height: 8)
-        NSColor.white.setFill(); NSColor.controlAccentColor.setStroke()
+        NSColor.white.setFill(); color.setStroke()
         let path = NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2); path.lineWidth = 1.5; path.fill(); path.stroke()
     }
     private func drawSelection(_ mark: ImageMark) {
-        if mark.kind == .arrow { [mark.start,mark.end].forEach(drawHandle); return }
+        if mark.kind != .text {
+            guard tool == .select else { return }
+            let points = mark.kind == .arrow ? [mark.start,mark.end] : handles(CGRect(x:min(mark.start.x,mark.end.x),y:min(mark.start.y,mark.end.y),width:abs(mark.end.x-mark.start.x),height:abs(mark.end.y-mark.start.y)))
+            points.forEach { drawHandle($0,color:.secondaryLabelColor) }
+            return
+        }
         let rect = rectInView(MarkRenderer.bounds(mark)).insetBy(dx: -3, dy: -3)
         NSColor.controlAccentColor.setStroke()
         let border = NSBezierPath(rect: rect); border.setLineDash([4, 3], count: 2, phase: 0); border.stroke()
-        if mark.kind == .rectangle {
-            handles(CGRect(x: min(mark.start.x,mark.end.x),y: min(mark.start.y,mark.end.y),width: abs(mark.end.x-mark.start.x),height: abs(mark.end.y-mark.start.y))).forEach(drawHandle)
-        }
     }
     private func drawCrop(_ crop: CGRect) {
         let rect = rectInView(crop)
@@ -182,7 +184,7 @@ final class ImageCanvas: NSView, NSTextFieldDelegate {
             path.move(to: CGPoint(x: x,y: rect.minY)); path.line(to: CGPoint(x: x,y: rect.maxY))
             path.move(to: CGPoint(x: rect.minX,y: y)); path.line(to: CGPoint(x: rect.maxX,y: y)); path.stroke()
         }
-        NSBezierPath(rect: rect).stroke(); handles(crop).forEach(drawHandle)
+        NSBezierPath(rect: rect).stroke(); handles(crop).forEach { drawHandle($0) }
     }
     override func mouseDown(with event: NSEvent) { beginGesture(at: convert(event.locationInWindow, from: nil), clickCount: event.clickCount) }
     override func mouseDragged(with event: NSEvent) { continueGesture(at: convert(event.locationInWindow, from: nil)) }

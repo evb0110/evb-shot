@@ -266,17 +266,26 @@ enum SelfTest {
         defer { board.releaseGlobally() }
         let source = folder.appendingPathComponent("audio-only.m4a")
         let destination = folder.appendingPathComponent("Saved file with spaces - հայերեն.m4a")
+        let quotedDestination = "'\(destination.path)'"
         try await saveCaptureFile(from: source, to: destination, copyFilePath: true, pasteboard: board)
-        try check(board.string(forType: .string) == destination.path, "clipboard contains the full Unicode file path")
+        try check(board.string(forType: .string) == quotedDestination, "clipboard contains the single-quoted full Unicode file path")
         let saved = try Data(contentsOf: destination), original = try Data(contentsOf: source)
         try check(saved == original, "saved bytes")
         var failed = false
         do {
             try await saveCaptureFile(from: source, to: folder.appendingPathComponent("missing-parent/file.m4a"), copyFilePath: true, pasteboard: board)
         } catch { failed = true }
-        try check(failed && board.string(forType: .string) == destination.path, "failed save must throw and preserve clipboard")
+        try check(failed && board.string(forType: .string) == quotedDestination, "failed save must throw and preserve clipboard")
         try await saveCaptureFile(from: source, to: destination, copyFilePath: false, pasteboard: board)
-        try check(board.string(forType: .string) == destination.path, "save-only preserves clipboard")
+        try check(board.string(forType: .string) == quotedDestination, "save-only preserves clipboard")
+        let trickyFolder = folder.appendingPathComponent("Owner's captures",isDirectory:true)
+        try FileManager.default.createDirectory(at:trickyFolder,withIntermediateDirectories:true)
+        let tricky = trickyFolder.appendingPathComponent("Eugene's $HOME $(echo unsafe); `echo nope` \"clip\" - հայերեն.m4a")
+        try await saveCaptureFile(from:source,to:tricky,copyFilePath:true,pasteboard:board)
+        let expected = "'\(folder.path)/Owner'\\''s captures/Eugene'\\''s $HOME $(echo unsafe); `echo nope` \"clip\" - հայերեն.m4a'"
+        try check(board.string(forType:.string) == expected,"apostrophes are shell-escaped and shell metacharacters remain quoted")
+        let clipboardCases = [["path":destination.path,"clipboard":quotedDestination],["path":tricky.path,"clipboard":board.string(forType:.string)!]]
+        try JSONSerialization.data(withJSONObject:clipboardCases,options:[.prettyPrinted]).write(to:folder.appendingPathComponent("clipboard-cases.json"))
         print("PASS atomic save, overwrite, full Unicode clipboard path, failed-save clipboard preservation")
         let automatic = folder.appendingPathComponent("automatic-save",isDirectory:true)
         try FileManager.default.createDirectory(at:automatic,withIntermediateDirectories:true)
@@ -298,7 +307,7 @@ enum SelfTest {
             let controller = ResultController(CaptureArtifact(url:folder.appendingPathComponent(filename),kind:kind,width:640,height:360,hasAudio:true),saveSettings:settings,pasteboard:board)
             guard let url = try await EditorTest.saveAndCheck(controller,copy:true) else { throw ShotError("Media save button produced no file") }
             let asset = AVURLAsset(url:url), audioTracks = try await asset.loadTracks(withMediaType:.audio)
-            try check(board.string(forType:.string) == url.path && !audioTracks.isEmpty,"audio/video button saves playable audio and copies the absolute path")
+            try check(board.string(forType:.string) == "'\(url.path)'" && !audioTracks.isEmpty,"audio/video button saves playable audio and copies the single-quoted absolute path")
             if kind == .video { let videoTracks = try await asset.loadTracks(withMediaType:.video); try check(!videoTracks.isEmpty,"saved recording retains its video track") }
             controller.close()
         }

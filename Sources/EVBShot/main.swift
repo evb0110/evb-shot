@@ -2,6 +2,16 @@ import AppKit
 import ImageIO
 
 @MainActor
+enum StatusIcon {
+    static func image(recording: Bool = false) -> NSImage {
+        let image = NSImage(systemSymbolName: recording ? "record.circle.fill" : "viewfinder.circle.fill", accessibilityDescription: recording ? "EVBShot recording" : "EVBShot")!
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 22, weight: .regular))!
+        image.size = NSSize(width: 22, height: 22); image.isTemplate = true
+        return image
+    }
+}
+
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let selector = AreaSelector()
@@ -29,7 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "viewfinder.circle.fill", accessibilityDescription: "EVBShot")
+        statusItem.button?.imagePosition = .imageOnly
+        statusItem.button?.image = StatusIcon.image()
         rebuildMenu()
         if CommandLine.arguments.contains("--show-recorder") { showRecorder() }
         for index in CommandLine.arguments.indices where CommandLine.arguments[index] == "--show-capture" && CommandLine.arguments.indices.contains(index + 1) {
@@ -139,7 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onFinish = { [weak self] in self?.showResult($0) }
         controller.onClose = { [weak self] in self?.recording = nil; self?.setBusy(false); self?.updateActivationPolicy() }
         controller.onState = { [weak self] active in
-            self?.statusItem.button?.image = NSImage(systemSymbolName: active ? "record.circle.fill" : "viewfinder.circle.fill", accessibilityDescription: active ? "EVBShot recording" : "EVBShot")
+            self?.statusItem.button?.image = StatusIcon.image(recording: active)
             self?.rebuildMenu()
         }
         recording = controller; setBusy(true); updateActivationPolicy(); controller.showWindow(nil); NSApp.activate(ignoringOtherApps: true)
