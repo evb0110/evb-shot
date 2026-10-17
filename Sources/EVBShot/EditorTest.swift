@@ -504,8 +504,10 @@ enum EditorTest {
         let view = RecordingCurtainView(frame:CGRect(x:0,y:0,width:960,height:600))
         view.region = CGRect(x:100,y:100,width:760,height:400)
         let bitmap = NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:960,pixelsHigh:600,bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:960*4,bitsPerPixel:32)!
+        // Nonzero memory makes a missing clear fail deterministically.
+        bitmap.bitmapData!.update(repeating:255,count:bitmap.bytesPerRow*bitmap.pixelsHigh)
         NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep:bitmap)
-        NSColor.clear.setFill(); NSBezierPath(rect:view.bounds).fill(); view.draw(view.bounds)
+        NSGraphicsContext.current!.cgContext.clear(view.bounds); view.draw(view.bounds)
         NSGraphicsContext.restoreGraphicsState()
         try SelfTest.check((bitmap.colorAt(x:20,y:20)?.alphaComponent ?? 0) > 0.35,"curtain darkens outside the recording region")
         try SelfTest.check((bitmap.colorAt(x:480,y:300)?.alphaComponent ?? 1) == 0,"the recording region remains completely clear")
