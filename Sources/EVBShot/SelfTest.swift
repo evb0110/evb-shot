@@ -271,5 +271,45 @@ enum SelfTest {
             try bitmap.representation(using: .png, properties: [:])!.write(to: folder.appendingPathComponent(name))
         }
         print("PASS native UI rendered offscreen")
+        try resultLayout(folder: folder.appendingPathComponent("result-layout"))
+    }
+
+    @MainActor static func resultLayout(folder: URL) throws {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for (width, height) in [(2294, 1741), (3840, 2160), (7680, 1080), (1080, 7680)] {
+            let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                    space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            context.setFillColor(CGColor(gray: 0.97, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            context.setFillColor(CGColor(red: 0.1, green: 0.42, blue: 0.5, alpha: 1))
+            context.fill(CGRect(x: 0, y: height - 160, width: width, height: 160))
+            let font = CTFontCreateWithName("Menlo" as CFString, 32, nil)
+            for row in 0..<min(80, (height - 210) / 50) {
+                let line = CTLineCreateWithAttributedString(NSAttributedString(string: "\(row + 1). Native capture preview · \(width) × \(height) pixels", attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font]))
+                context.textPosition = CGPoint(x: 40, y: height - 220 - row * 50); CTLineDraw(line, context)
+            }
+            let image = context.makeImage()!
+            let url = folder.appendingPathComponent("capture-\(width)x\(height).png")
+            try CaptureEngine.writePNG(image, to: url)
+            let original = try Data(contentsOf: url)
+            let artifact = CaptureArtifact(url: url, kind: .image, width: width, height: height, hasAudio: false,
+                                           preview: NSImage(cgImage: image, size: NSSize(width: width, height: height)))
+            let result = ResultController(artifact)
+            let window = result.window!, view = window.contentView!
+            view.layoutSubtreeIfNeeded()
+            let frame = window.frame
+            print("RESULT \(width)×\(height): window \(frame.width)×\(frame.height) points; content fitting size \(view.fittingSize)")
+            let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])!.write(to: folder.appendingPathComponent("result-\(width)x\(height).png"))
+            try check(frame.width <= 760 && frame.height <= 600, "result window grew with \(width)×\(height) capture: \(frame)")
+            try check(view.fittingSize.width <= 760, "image forces oversized content when the window opens: \(view.fittingSize)")
+            try check(NSScreen.screens.contains { $0.visibleFrame.contains(frame) }, "result window must fit a single screen")
+            let saved = folder.appendingPathComponent("saved-\(width)x\(height).png")
+            try CaptureFiles.atomicCopy(from: artifact.url, to: saved)
+            let copied = try Data(contentsOf: saved)
+            try check(copied == original, "preview layout must preserve full-resolution saved bytes")
+            result.close()
+        }
+        print("PASS full-size, 4K, ultra-wide and portrait captures keep a compact window and unchanged saved PNGs")
     }
 }

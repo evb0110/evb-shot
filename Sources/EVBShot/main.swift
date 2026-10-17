@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -16,6 +17,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.image = NSImage(systemSymbolName: "viewfinder.circle.fill", accessibilityDescription: "EVBShot")
         rebuildMenu()
         if CommandLine.arguments.contains("--show-recorder") { showRecorder() }
+        if let index = CommandLine.arguments.firstIndex(of: "--show-capture"), CommandLine.arguments.indices.contains(index + 1) {
+            do {
+                let url = URL(fileURLWithPath: CommandLine.arguments[index + 1])
+                guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                      let info = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
+                      let width = info[kCGImagePropertyPixelWidth as String] as? Int,
+                      let height = info[kCGImagePropertyPixelHeight as String] as? Int,
+                      let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 1024] as CFDictionary) else {
+                    throw ShotError("Cannot open this capture.")
+                }
+                let preview = NSImage(cgImage: thumbnail, size: NSSize(width: width, height: height))
+                showResult(CaptureArtifact(url: url, kind: .image, width: width, height: height, hasAudio: false, preview: preview))
+            } catch { presentError(error) }
+        }
     }
     private func item(_ title: String, _ action: Selector) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; return item
@@ -122,12 +137,13 @@ MainActor.assumeIsolated {
     } else if CommandLine.arguments.contains("--permission-status") {
         print("Screen capture access: \(CGPreflightScreenCaptureAccess())")
         exit(0)
-    } else if let index = CommandLine.arguments.firstIndex(where: { $0 == "--self-test" || $0 == "--capture-smoke" }), CommandLine.arguments.indices.contains(index + 1) {
+    } else if let index = CommandLine.arguments.firstIndex(where: { $0 == "--self-test" || $0 == "--capture-smoke" || $0 == "--result-layout-test" }), CommandLine.arguments.indices.contains(index + 1) {
         app.setActivationPolicy(.prohibited)
         let folder = URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true)
         Task {
             do {
                 if CommandLine.arguments[index] == "--capture-smoke" { try await SelfTest.captureSmoke(folder: folder) }
+                else if CommandLine.arguments[index] == "--result-layout-test" { try SelfTest.resultLayout(folder: folder) }
                 else { try await SelfTest.run(folder: folder) }
                 exit(0)
             }

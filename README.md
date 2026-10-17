@@ -41,6 +41,10 @@ python3 scripts/verify-png.py .devkit/checks/run-1
 python3 scripts/verify-media.py .devkit/checks/run-1
 ```
 
+`--result-layout-test OUTPUT_DIRECTORY` runs only the result-window regression checks. Native-size 2294 × 1741, 4K, ultra-wide, and portrait previews must keep both the window and its Auto Layout fitting size compact, stay within one screen, and save byte-identical original PNGs.
+
+`--show-capture PNG_PATH` reopens an existing capture in the native result window without changing its file. This also restores a capture after installing an update.
+
 The app tests native scrolling pixels, real rendered text, rejected overlaps, CGImage orientation, a **1537 × 70001** PNG, recording/compositing, mixed audio, muting, audio-only recording, a static-screen frame clock, atomic saves, Unicode paths, and failed-save clipboard preservation. UI windows render offscreen. Tests use a private pasteboard and synthetic camera/audio, so they do not activate those devices or modify your clipboard. Independent PNG checks use Python's standard library. The optional independent media checks require FFmpeg/ffprobe for development only.
 
 `--capture-smoke OUTPUT_DIRECTORY` runs a short silent live screen test when screen capture access is already available. It checks full-screen, area, window capture, and a 1080p/15 FPS recording. Desktop pixels are discarded after checking. It does not activate the camera or microphone.
