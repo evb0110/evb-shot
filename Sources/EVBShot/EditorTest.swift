@@ -8,7 +8,8 @@ enum EditorTest {
     static func recordingWorkflow(folder:URL) async throws {
         guard CGPreflightScreenCaptureAccess() else { throw ShotError("Recording workflow test requires existing screen capture permission.") }
         try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
-        let recorder = RecordingController(display:CGMainDisplayID(),overlayPresentation:.offscreen)
+        let recorder = RecordingController(display:CGMainDisplayID(),overlayPresentation:.offscreen,
+            permissionAccess:RecordingPermissionAccess(status:{ _ in .denied },request:{ _ in false }))
         let region = CaptureSource.display(CGMainDisplayID(),CGRect(x:80,y:100,width:640,height:360))
         let expected = try await CaptureEngine.surface(for:region)
         if #available(macOS 15.2, *) {
@@ -24,7 +25,14 @@ enum EditorTest {
         guard let start = controls.compactMap({ $0 as? NSButton }).first(where: { $0.title == "Start Recording" }) else { throw ShotError("Missing Start Recording action") }
         var result:CaptureArtifact?
         recorder.onFinish = { result = $0 }
+        let camera = controls.compactMap { $0 as? NSButton }.first { $0.title == "Selfie camera" }!
+        try SelfTest.check(camera.state == .off,"camera remains opt-in")
+        camera.state = .on
         start.performClick(nil)
+        await recorder.preparationTask?.value
+        try SelfTest.check(recorder.phase == .configuring && recorder.window!.isVisible && recorder.selectedSourceIndex == 1,"camera denial keeps the selected area and recording setup")
+        let without = descendants(recorder.window!.contentView!).compactMap { $0 as? NSButton }.first { $0.title == "Record Without Camera" }!
+        without.performClick(nil)
         for _ in 0..<100 where !recorder.isRecording { try await Task.sleep(nanoseconds:100_000_000) }
         try SelfTest.check(recorder.isRecording,"Start launches the real screen recorder")
         try SelfTest.check(!recorder.window!.isVisible,"recording setup must disappear when Start is pressed")
@@ -46,7 +54,7 @@ enum EditorTest {
         defer { try? FileManager.default.removeItem(at:result.url.deletingLastPathComponent()) }
         try await mediaResults(video:result,folder:folder)
         try FileManager.default.copyItem(at:result.url,to:folder.appendingPathComponent("recording.mov"))
-        print("PASS real Start/Stop recording hides configuration and never reopens it")
+        print("PASS denied-camera recovery button starts a real silent area recording, keeps the frame while recording, and Stop opens review")
     }
 
     static func mediaResults(video:CaptureArtifact,audio:CaptureArtifact? = nil,folder:URL) async throws {
@@ -150,6 +158,7 @@ enum EditorTest {
     }
     static func run(folder: URL) async throws {
         try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
+        try await recordingPermissionRegression(folder:folder)
         try statusIcon(folder:folder)
         try recordingCurtain(folder:folder)
         try await annotationPalette(folder:folder)
@@ -382,6 +391,50 @@ enum EditorTest {
         try SelfTest.check(recoveredPixels == expectedPixels,"continuous scrolling recovery retains every original native pixel")
         scroll.close()
         print("PASS actual 24 FPS popup mapping, nonactivating scrolling panel, animation rejection followed by automatic pixel-exact scroll recovery through the live frame receiver")
+    }
+    static func recordingPermissionRegression(folder:URL) async throws {
+        func children(_ view:NSView) -> [NSView] { [view] + view.subviews.flatMap(children) }
+        for permission in RecordingPermission.allCases {
+            var recorder:RecordingController?, access:AVAuthorizationStatus = .notDetermined
+            var requests = 0, remainedVisible = false, opened:URL?
+            let permissions = RecordingPermissionAccess(status:{ _ in access },request:{ requested in
+                requests += 1
+                remainedVisible = recorder?.window?.isVisible == true && recorder?.selectedSourceIndex == 1 && NSApp.windows.contains { $0.identifier?.rawValue == "RecordingRegionPreview" && $0.isVisible }
+                access = .denied
+                return false
+            })
+            let controller = RecordingController(display:CGMainDisplayID(),overlayPresentation:.offscreen,
+                permissionAccess:permissions,openSettings:{ opened = $0 })
+            recorder = controller
+            controller.acceptSelection(.display(CGMainDisplayID(),CGRect(x:80,y:100,width:640,height:360)))
+            let originalOutline = NSApp.windows.first { $0.identifier?.rawValue == "RecordingRegionPreview" && $0.isVisible }!
+            let controls = children(controller.window!.contentView!)
+            let buttons = controls.compactMap { $0 as? NSButton }
+            let input = buttons.first { $0.title == (permission == .camera ? "Selfie camera" : "Microphone") }!
+            input.state = .on
+            if permission == .microphone { buttons.first { $0.title == "Audio only" }!.state = .on }
+            let start = buttons.first { $0.title == "Start Recording" }!
+            start.performClick(nil)
+            try SelfTest.check(controller.window!.isVisible,"recording controls must stay visible while camera permission is being checked")
+            await controller.preparationTask?.value
+            try SelfTest.check(remainedVisible && requests == 1,"macOS authorization is requested once with the selected area still visible")
+            try SelfTest.check(controller.phase == .configuring && controller.window!.isVisible && controller.selectedSourceIndex == 1,"denial returns to the same setup without losing the selected area")
+            let outline = NSApp.windows.first { $0.identifier?.rawValue == "RecordingRegionPreview" && $0.isVisible }
+            try SelfTest.check(outline === originalOutline && outline!.frame.maxX < -10000,"permission failure keeps the same selection frame visible; native tests stay offscreen")
+            let settings = buttons.first { $0.title == "Open \(permission.rawValue) Settings…" }!
+            settings.performClick(nil)
+            try SelfTest.check(opened == permission.settingsURL,"recovery button opens the correct macOS privacy category")
+            let without = buttons.first { $0.title == "Record Without \(permission.rawValue)" }!
+            try SelfTest.check(without.isEnabled == (permission == .camera),"audio-only recording cannot continue without its only audio source")
+            if permission == .microphone {
+                try SelfTest.check(controls.compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("choose Computer audio") },"audio-only recovery explains how to retain a valid audio source")
+            }
+            start.performClick(nil); await controller.preparationTask?.value
+            try SelfTest.check(requests == 1 && controller.window!.isVisible,"retrying a denied permission never re-prompts or hides setup")
+            try await renderWindow(controller.window!,name:"\(permission.rawValue.lowercased())-permission",folder:folder)
+            controller.close(); recorder = nil
+        }
+        print("PASS camera/microphone permission preflight keeps setup and region visible, settings actions target the correct category, and denied retries do not blink or re-prompt")
     }
     static func annotationPalette(folder:URL) async throws {
         let palette = AnnotationPaletteController(color:MarkColor.red.nsColor)

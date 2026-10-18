@@ -59,9 +59,7 @@ final class RecordingSession: NSObject, SCStreamOutput, SCStreamDelegate, @unche
             throw ShotError("Choose microphone or system audio for an audio-only recording.")
         }
         if options.microphone {
-            guard await AVCaptureDevice.requestAccess(for: .audio) else {
-                throw ShotError("Microphone access is off. Enable EVB Shot in System Settings → Privacy & Security → Microphone.")
-            }
+            try await RecordingPermissionAccess().authorize(.microphone)
         }
         if let device = options.camera, !options.audioOnly {
             let camera = CameraCapture(); self.camera = camera
