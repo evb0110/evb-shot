@@ -16,7 +16,8 @@ with tempfile.TemporaryDirectory(prefix='dmg-art-', dir=root / '.devkit') as dir
     dmgbuild.build_dmg(str(destination), 'EVB Shot', settings={
         'format': 'ULFO', 'filesystem': 'APFS',
         'files': [str(app)], 'symlinks': {'Applications': '/Applications'},
-        'hide_extensions': ['EVB Shot.app'],
+        # Leave the sealed app untouched, including its Finder metadata.
+        # SetFile -a E on the app makes strict codesign verification fail.
         'hide': ['.background.tiff'],
         'background': str(art / 'background.png'),
         'window_rect': ((200, 160), (600, 450)),

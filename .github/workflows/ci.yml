@@ -33,6 +33,7 @@ jobs:
           hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$PWD/.devkit/installer-mounted" .devkit/installer.dmg
           trap 'hdiutil detach "$PWD/.devkit/installer-mounted"' EXIT
           .devkit/dependencies/dmgbuild/bin/python scripts/verify-dmg-layout.py .devkit/installer-mounted
+          codesign --verify --deep --strict ".devkit/installer-mounted/EVB Shot.app"
       - name: Verify full-resolution scrolling and media exports
         run: |
           bash scripts/run-native-check.sh "dist/EVB Shot.app/Contents/MacOS/EVBShot" --self-test "$PWD/.devkit/ci-core"
