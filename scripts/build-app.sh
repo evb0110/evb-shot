@@ -19,20 +19,22 @@ mkdir -p "$app_path/Contents/Frameworks"
 ditto "$framework" "$app_path/Contents/Frameworks/Sparkle.framework"
 cp .build/artifacts/sparkle/Sparkle/LICENSE "$app_path/Contents/Resources/Sparkle-LICENSE.txt"
 signing_identity="${EVBSHOT_SIGN_IDENTITY:--}"
+signing_options=(--force)
+if [[ -n "${EVBSHOT_SIGN_KEYCHAIN:-}" ]]; then signing_options+=(--keychain "$EVBSHOT_SIGN_KEYCHAIN"); fi
 sparkle="$app_path/Contents/Frameworks/Sparkle.framework"
 # Sign inside out, including Sparkle's standalone helper. Developer ID builds
 # must give the framework the host's identity for hardened library validation.
 for component in "$sparkle/Versions/B/Autoupdate" "$sparkle/Versions/B/Updater.app" "$sparkle/Versions/B/XPCServices/Downloader.xpc" "$sparkle/Versions/B/XPCServices/Installer.xpc" "$sparkle"; do
     if [[ "$signing_identity" == "-" ]]; then
-        codesign --force --sign - "$component"
+        codesign "${signing_options[@]}" --sign - "$component"
     else
-        codesign --force --options runtime --timestamp --sign "$signing_identity" "$component"
+        codesign "${signing_options[@]}" --options runtime --timestamp --sign "$signing_identity" "$component"
     fi
 done
 if [[ "$signing_identity" == "-" ]]; then
-    codesign --force --sign - --entitlements Resources/EVBShot.entitlements "$app_path"
+    codesign "${signing_options[@]}" --sign - --entitlements Resources/EVBShot.entitlements "$app_path"
 else
-    codesign --force --options runtime --timestamp --entitlements Resources/EVBShot.entitlements --sign "$signing_identity" "$app_path"
+    codesign "${signing_options[@]}" --options runtime --timestamp --entitlements Resources/EVBShot.entitlements --sign "$signing_identity" "$app_path"
 fi
 codesign --verify --deep --strict "$app_path"
 printf '%s\n' "$app_path"
