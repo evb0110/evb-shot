@@ -152,6 +152,7 @@ enum EditorTest {
         try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
         try statusIcon(folder:folder)
         try recordingCurtain(folder:folder)
+        try await annotationPalette(folder:folder)
         try AppUpdates.verifyLifecycle()
         try await retinaRendering(folder:folder)
         let width = 640, height = 480
@@ -208,6 +209,14 @@ enum EditorTest {
             }
         }
         let bluePixels = try selectionBluePixels()
+        let colorButton = toolbarItems.first { $0.itemIdentifier.rawValue == "style" }!.view!.subviews.compactMap { $0 as? AnnotationColorButton }.first!
+        let palette = colorButton.makePalette()
+        func descendants(_ view:NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let blueSwatch = descendants(palette.view).compactMap { $0 as? NSButton }.first { $0.toolTip == "Blue" }!
+        blueSwatch.performClick(nil)
+        try SelfTest.check(document.state.marks[0].color == MarkColor(.systemBlue),"palette selection reaches the editor's selected annotation")
+        document.history.undo()
+        try SelfTest.check(document.state.marks[0].color == .red,"palette color changes participate in native undo")
         func shortcut(_ redo:Bool, modifiers:NSEvent.ModifierFlags? = nil) -> Bool {
             let flags = modifiers ?? (redo ? [.command,.shift] : [.command])
             let event = NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:flags,timestamp:0,windowNumber:controller.window!.windowNumber,context:nil,characters:redo ? "Z" : "z",charactersIgnoringModifiers:"z",isARepeat:false,keyCode:6)!
@@ -331,7 +340,6 @@ enum EditorTest {
         try SelfTest.check(!changed.hasEdits,"replacing a source does not reapply stale annotations")
         print("PASS transparent/translucent native pixels, save and copy edited image path, source-version guard")
         let recorder = RecordingController(display:CGMainDisplayID(),overlayPresentation:.offscreen)
-        func descendants(_ view:NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
         guard let fps = descendants(recorder.window!.contentView!).compactMap({ $0 as? NSPopUpButton }).first(where:{ $0.itemTitles.contains("24 FPS") }) else { throw ShotError("Recording UI must expose 24 FPS") }
         try SelfTest.check(recorder.selectedFrameRate == 30,"default frame rate remains 30 FPS")
         fps.selectItem(withTitle:"24 FPS"); try SelfTest.check(recorder.selectedFrameRate == 24,"24 FPS popup maps to the recording configuration")
@@ -374,6 +382,33 @@ enum EditorTest {
         try SelfTest.check(recoveredPixels == expectedPixels,"continuous scrolling recovery retains every original native pixel")
         scroll.close()
         print("PASS actual 24 FPS popup mapping, nonactivating scrolling panel, animation rejection followed by automatic pixel-exact scroll recovery through the live frame receiver")
+    }
+    static func annotationPalette(folder:URL) async throws {
+        let palette = AnnotationPaletteController(color:MarkColor.red.nsColor)
+        let window = NSWindow(contentRect:CGRect(x:-20000,y:-20000,width:224,height:158),styleMask:[.borderless],backing:.buffered,defer:false)
+        window.isReleasedWhenClosed = false; window.contentViewController = palette
+        window.contentView!.layoutSubtreeIfNeeded()
+        func children(_ view:NSView) -> [NSView] { [view] + view.subviews.flatMap(children) }
+        let buttons = children(palette.view).compactMap { $0 as? NSButton }
+        let swatches = buttons.filter { $0.toolTip != nil }
+        try SelfTest.check(swatches.count == 12 && Set(swatches.compactMap(\.toolTip)).count == 12,"annotation palette contains twelve distinct usable colors, without empty saved-color boxes")
+        try SelfTest.check(swatches.first!.state == .on,"the current annotation color is marked")
+        try await renderWindow(window,name:"annotation-palette",folder:folder)
+        var chosen:NSColor?, more = false
+        palette.onPick = { chosen = $0 }; palette.onMore = { more = true }
+        swatches.first(where: { $0.toolTip == "Blue" })!.performClick(nil)
+        try SelfTest.check(chosen == NSColor.systemBlue,"clicking a swatch selects its real annotation color")
+        buttons.first(where: { $0.title == "More Colors…" })!.performClick(nil)
+        try SelfTest.check(more,"advanced system colors remain available explicitly")
+        for screen in [CGRect(x:0,y:0,width:1920,height:1080),CGRect(x:-2560,y:120,width:2560,height:1440)] {
+            for x in [screen.minX+20,screen.midX,screen.maxX-20] {
+                let anchor = CGRect(x:x-15,y:screen.maxY-80,width:30,height:26)
+                let frame = AnnotationColorButton.customPanelFrame(anchor:anchor,size:CGSize(width:260,height:470),visibleFrame:screen)
+                try SelfTest.check(screen.contains(frame) && frame.maxY < anchor.minY && abs(frame.midX-anchor.midX)<140,"optional system picker is anchored beside the editor and clamped to its display")
+            }
+        }
+        window.close()
+        print("PASS compact annotation palette actions and anchored custom picker on primary/negative-origin displays")
     }
     static func statusIcon(folder:URL) throws {
         for recording in [false,true] {
