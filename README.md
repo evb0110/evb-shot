@@ -20,6 +20,8 @@ macOS may ask for screen capture access. Microphone/camera permission is request
 
 The app appears in the Dock and ⌘Tab while an editor, recording setup, window picker, Settings, or About window is open. Closing those windows returns it to the menu bar. Reopened editable drafts can undo/redo each restored annotation and their crop. The menu has capture/recording icons, and About uses the native macOS panel with version, author, source, and library credits. The app icon source is `Resources/AppIcon.svg`; the bundled ICNS contains all macOS sizes with transparent corners.
 
+If camera or microphone access is denied, setup and the selected-area frame stay visible. Use **Open Camera Settings…** or **Open Microphone Settings…** to grant access, or explicitly record without the blocked input. Audio-only recording must retain at least one audio source. The controls hide only after the selected inputs pass permission checks.
+
 ## Full-resolution scrolling
 
 The stitcher matches overlapping native viewports and appends original RGBA rows to a disk spool. Export streams PNG rows through zlib. The editor decodes original rows through libpng into a disk spool, displays bounded viewport tiles, and renders edited exports in strips. Viewports follow the display's physical pixel density, without a 2048-pixel cap, and refresh when moving between displays. **100%** maps one original image pixel to one display pixel. Fit uses native source pixels where possible, with bounded oversampling for very large captures. It never builds a whole long image in a GPU texture or giant bitmap, and never reduces output dimensions. Tall images open at Fit width; scroll to reach the entire capture, or choose Fit or a fixed zoom.

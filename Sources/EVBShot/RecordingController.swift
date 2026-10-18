@@ -25,6 +25,14 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
     private let startButton = NSButton(title:"Start Recording",target:nil,action:nil)
     private let cancelButton = NSButton(title:"Cancel",target:nil,action:nil)
     private let cameraRow = NSStackView()
+    private let recoveryRow = NSStackView()
+    private let settingsButton = NSButton(title:"Open Settings…",target:nil,action:nil)
+    private let withoutButton = NSButton(title:"Record Without Camera",target:nil,action:nil)
+    private let permissionAccess: RecordingPermissionAccess
+    private let openSettings: (URL) -> Void
+    private let presentation: RecordingOverlay.Presentation
+    private var blockedPermission: RecordingPermission?
+    private(set) var preparationTask: Task<Void,Never>?
     private var configurationViews:[NSControl] = []
     private var cameraDevices:[AVCaptureDevice] = []
     private var session:RecordingSession?
@@ -42,7 +50,10 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
     var isRecording:Bool { phase == .recording }
     var hasActiveWork:Bool { phase == .preparing || phase == .recording || phase == .finishing }
 
-    init(display:CGDirectDisplayID, overlayPresentation:RecordingOverlay.Presentation = .desktop) {
+    init(display:CGDirectDisplayID, overlayPresentation:RecordingOverlay.Presentation = .desktop,
+         permissionAccess:RecordingPermissionAccess = RecordingPermissionAccess(),
+         openSettings:@escaping (URL)->Void = { NSWorkspace.shared.open($0) }) {
+        self.permissionAccess = permissionAccess; self.openSettings = openSettings; presentation = overlayPresentation
         recordingOverlay = RecordingOverlay(presentation:overlayPresentation)
         source = .display(display,nil)
         let panel = NSPanel(contentRect:CGRect(x:0,y:0,width:520,height:190),styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
@@ -109,6 +120,11 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
         actions.widthAnchor.constraint(equalToConstant:488).isActive = true
         status.setContentHuggingPriority(.defaultLow,for:.horizontal)
         stack.addArrangedSubview(actions)
+        settingsButton.target = self; settingsButton.action = #selector(openPermissionSettings)
+        withoutButton.target = self; withoutButton.action = #selector(recordWithoutBlockedInput)
+        for button in [settingsButton,withoutButton] { button.bezelStyle = .rounded; button.controlSize = .small }
+        recoveryRow.addArrangedSubview(settingsButton); recoveryRow.addArrangedSubview(withoutButton)
+        recoveryRow.spacing = 8; recoveryRow.isHidden = true; stack.addArrangedSubview(recoveryRow)
         configurationViews = [sourceMode,resolution,fps,microphone,systemAudio,camera,devices,corner,audioOnly]
         panel.contentView = material
         updateOptions(); placeControls()
@@ -127,6 +143,10 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
         camera.isEnabled = !isAudio && !cameraDevices.isEmpty
         devices.isEnabled = !isAudio && camera.state == .on; corner.isEnabled = devices.isEnabled
         cameraRow.isHidden = !devices.isEnabled
+        if let blockedPermission,
+           blockedPermission == .camera && (isAudio || camera.state == .off) || blockedPermission == .microphone && microphone.state == .off {
+            self.blockedPermission = nil; recoveryRow.isHidden = true
+        }
         if !hasActiveWork {
             var sources:[String] = []
             if microphone.state == .on { sources.append("mic") }
@@ -135,6 +155,10 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
             status.stringValue = sources.isEmpty ? (isAudio ? "Choose an audio source." : "Audio and camera are off.") : sources.joined(separator:" + ")
             startButton.isEnabled = !isAudio || microphone.state == .on || systemAudio.state == .on
         }
+        withoutButton.isEnabled = blockedPermission != .microphone || !isAudio || systemAudio.state == .on
+        fitControls()
+    }
+    private func fitControls() {
         window?.contentView?.layoutSubtreeIfNeeded()
         if let size = window?.contentView?.fittingSize { window?.setContentSize(size) }
     }
@@ -167,15 +191,24 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
         case .window: sourceLabel.stringValue = "Selected window"
         }
         phase = .configuring; window?.makeFirstResponder(nil)
-        regionOutline?.orderOut(nil); regionOutline = nil
-        if let region = selectionBounds, present {
-            let outline = NSPanel(contentRect:region.insetBy(dx:-2,dy:-2),styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
+        if present { showSelectionOutline() }
+        placeControls(); if present { showWindow(nil) }
+    }
+    private func showSelectionOutline() {
+        guard let region = selectionBounds else { regionOutline?.orderOut(nil); regionOutline = nil; return }
+        var frame = region.insetBy(dx:-2,dy:-2)
+        if presentation == .offscreen { frame = frame.offsetBy(dx:-30000,dy:-30000) }
+        if let outline = regionOutline {
+            if outline.frame != frame { outline.setFrame(frame,display:true) }
+            if !outline.isVisible { outline.orderFrontRegardless() }
+        } else {
+            let outline = NSPanel(contentRect:frame,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
+            outline.identifier = NSUserInterfaceItemIdentifier("RecordingRegionPreview")
             outline.isOpaque = false; outline.backgroundColor = .clear; outline.hasShadow = false
             outline.level = .floating; outline.ignoresMouseEvents = true; outline.hidesOnDeactivate = false
             outline.collectionBehavior = [.canJoinAllSpaces,.fullScreenAuxiliary]
             outline.contentView = RecordingRegionView(); outline.orderFrontRegardless(); regionOutline = outline
         }
-        placeControls(); if present { showWindow(nil) }
     }
     private func placeControls() {
         let screen:NSScreen
@@ -189,6 +222,7 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
             if region.minY-size.height-12 >= bounds.minY { origin.y = region.minY-size.height-12 }
             else if region.maxY+size.height+12 <= bounds.maxY { origin.y = region.maxY+12 }
         }
+        if presentation == .offscreen { origin.x -= 30000; origin.y -= 30000 }
         window.setFrameOrigin(origin)
     }
     private func selectArea() {
@@ -212,11 +246,23 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
         guard phase == .configuring else { return }
         phase = .preparing; pendingFailure = nil
         startButton.isEnabled = false; cancelButton.isEnabled = false
+        settingsButton.isEnabled = false; withoutButton.isEnabled = false
+        startButton.title = "Preparing…"
         configurationViews.forEach { $0.isEnabled = false }
-        // Hide before resolving content or asking the writer to start. Setup never enters a recording.
-        regionOutline?.orderOut(nil); window?.orderOut(nil)
-        Task { [self] in
+        preparationTask = Task { [self] in
+            defer { preparationTask = nil }
             do {
+                if audioOnly.state != .on, camera.state == .on {
+                    status.stringValue = "Checking camera access…"
+                    try await permissionAccess.authorize(.camera)
+                }
+                if microphone.state == .on {
+                    status.stringValue = "Checking microphone access…"
+                    try await permissionAccess.authorize(.microphone)
+                }
+                // Do not hide or move setup for a denied permission. Once access
+                // is ready, hide before resolving the surface or opening devices.
+                regionOutline?.orderOut(nil); window?.orderOut(nil)
                 let surface = try await CaptureEngine.surface(for:source)
                 var options = RecordingOptions()
                 options.fps = selectedFrameRate
@@ -269,8 +315,26 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
         recordingOverlay.hide()
         phase = .configuring; timer?.invalidate(); timer = nil
         onState?(false); configurationViews.forEach { $0.isEnabled = true }; cancelButton.isEnabled = true
+        settingsButton.isEnabled = true; startButton.title = "Start Recording"
+        blockedPermission = (error as? RecordingAccessError)?.permission
+        recoveryRow.isHidden = blockedPermission == nil
+        if let blockedPermission {
+            settingsButton.title = "Open \(blockedPermission.rawValue) Settings…"
+            withoutButton.title = "Record Without \(blockedPermission.rawValue)"
+        }
         updateOptions(); status.stringValue = error.localizedDescription
-        placeControls(); showWindow(nil)
+        if blockedPermission == .microphone, audioOnly.state == .on, systemAudio.state == .off {
+            status.stringValue = "Microphone access is unavailable. Open Settings or choose Computer audio."
+        }
+        fitControls(); showSelectionOutline(); placeControls(); showWindow(nil)
+    }
+    @objc private func openPermissionSettings() {
+        if let blockedPermission { openSettings(blockedPermission.settingsURL) }
+    }
+    @objc private func recordWithoutBlockedInput() {
+        guard phase == .configuring, let blockedPermission, withoutButton.isEnabled else { return }
+        if blockedPermission == .camera { camera.state = .off } else { microphone.state = .off }
+        updateOptions(); startRecording()
     }
     @objc private func cancel() { guard !hasActiveWork else { return }; phase = .closed; close() }
     func windowShouldClose(_ sender:NSWindow) -> Bool { !hasActiveWork }
