@@ -4,11 +4,11 @@ A small native macOS screenshot and recording prototype. Swift, AppKit, ScreenCa
 
 ## Use
 
-Download the [latest release](https://github.com/evb0110/evb-shot/releases/latest), unzip, and move **EVB Shot.app** to Applications. Requires macOS 15+ and Apple Silicon. Click its viewfinder circle in the menu bar.
+Download the [latest DMG](https://github.com/evb0110/evb-shot/releases/latest/download/EVB-Shot-macOS-arm64.dmg), open it, and drag **EVB Shot.app** to Applications. Requires macOS 15+ and Apple Silicon. Click its viewfinder circle in the menu bar.
 
 [Website](https://evb-shot.vercel.app) · [Source](https://github.com/evb0110/evb-shot) · [MIT License](LICENSE)
 
-This prototype is not notarized. macOS may require **System Settings → Privacy & Security → Open Anyway** on first launch.
+Public releases are signed with Developer ID and notarized by Apple. Both the app and disk image carry stapled notarization tickets.
 
 - **Capture Area**, **Capture Full Screen**, **Capture Window**. PNG at native pixel dimensions. Window capture has no added background or drop shadow.
 - **Annotate and crop** in a compact image editor. The top toolbar provides Select, Rectangle, Arrow, Text, and Crop, plus color, line thickness or text size, Undo, Redo, and Delete. **⌘Z** undoes; **⇧⌘Z** redoes. While typing a label, those shortcuts operate on the text. Click to place text; double-click existing text with Select to edit it. Select and drag objects to move them, or drag rectangle corners and arrow endpoints to resize. Arrows and rectangles show no selection decorations while drawing. Select a shape to reveal small gray resize handles, without an outline. Crop has explicit **Cancel / Crop** actions. Zoom and image dimensions stay in the bottom bar.
@@ -36,7 +36,7 @@ agent-env run --mem 2G -- bash scripts/build-app.sh
 open "dist/EVB Shot.app"
 ```
 
-Outside this workspace's agent environment, `bash scripts/build-app.sh` is sufficient. The default signature is ad hoc. Set `EVBSHOT_SIGN_IDENTITY` to a local Developer ID identity for a stable signed build. The script includes the camera/audio entitlements for hardened runtime signing. The public prototype is ad-hoc signed and not notarized. A local Developer ID build can set `EVBSHOT_NOTARY_PROFILE` to an existing notarytool keychain profile when packaging.
+Outside this workspace's agent environment, `bash scripts/build-app.sh` is sufficient for development. Its default signature is ad hoc. Set `EVBSHOT_SIGN_IDENTITY` to a local Developer ID identity for a stable signed build. The script includes the camera/audio entitlements for hardened runtime signing. Release packaging requires Developer ID signing and notarization credentials; it never falls back to an unsigned public release.
 
 ## Verify
 
@@ -68,11 +68,17 @@ The CleanShot research in `docs/research` informed the feature boundaries and ed
 
 GitHub Actions **CI** builds and exercises the native app on Apple Silicon macOS, including independent PNG verification. The **Release** workflow runs those checks before packaging and publishing a `v*` tag. `workflow_dispatch` builds the same archive as an Actions artifact without publishing.
 
-To cut the next patch from a clean, verified `main`, update `docs/release-notes.md` with the change, land it, then run `bash scripts/cut-release.sh` (or pass `minor` / `major`). This increments both `CFBundleShortVersionString` and the monotonic `CFBundleVersion`, commits and publishes the version change, waits for exact-commit CI, and pushes its matching tag. The tag pipeline publishes the archive and signed `appcast.xml` together after checks. For a version already bumped as part of a reviewed change, push its matching tag directly. A mismatched tag is rejected. The archive has a stable name for the landing page, SHA-256 checksums, and a source commit receipt. Hosted packages are ad-hoc signed; signing credentials are not embedded in the repository. Sparkle checks for updates automatically; **Check for Updates…** also checks on demand. **Settings** can disable automatic checks. Update archives and the feed are Ed25519-signed, verified before extraction, and served through GitHub Releases. Installing an update requires your action and waits until captures and editors have finished. Version 0.1.2 and earlier need one manual installation to gain the updater.
+To cut the next patch from a clean, verified `main`, update `docs/release-notes.md` with the change, land it, then run `bash scripts/cut-release.sh` (or pass `minor` / `major`). This increments both `CFBundleShortVersionString` and the monotonic `CFBundleVersion`, commits and publishes the version change, waits for exact-commit CI, and pushes its matching tag. For a version already bumped as part of a reviewed change, push its matching tag directly. A mismatched tag is rejected.
+
+The tag pipeline signs with Developer ID, notarizes and staples the app, then creates the DMG and Sparkle ZIP from that same app. It also signs, notarizes, and staples the DMG. Before publication it downloads the uploaded artifacts, checks signatures and SHA-256 checksums, validates both tickets with Gatekeeper, mounts the DMG, and confirms that its app matches the ZIP byte for byte. Only then does it publish the release and update feed. The landing page uses the stable DMG download name; Sparkle uses the ZIP.
+
+Sparkle checks for updates automatically; **Check for Updates…** also checks on demand. **Settings** can disable automatic checks. Update archives and the feed are Ed25519-signed, verified before extraction, and served through GitHub Releases. Installing an update requires your action and waits until captures and editors have finished. Version 0.1.2 and earlier need one manual installation to gain the updater.
 
 CI requires 20 consecutive native editor runs, independent PNG pixel checks, media export checks, and landing asset checks. Test output is unbuffered, and failed jobs report available native crash diagnostics. A failed run stops validation; there are no pass-on-retry checks.
 
-For local packaging, run `bash scripts/package-release.sh`. Optional `EVBSHOT_SIGN_IDENTITY` and `EVBSHOT_NOTARY_PROFILE` use your existing Developer ID and notarization credentials. The separate Sparkle update-signing key uses the `com.evb.shot.updates` Keychain account locally and the repository Actions secret `SPARKLE_PRIVATE_KEY`. Apple signing/notarization credentials stay local. `bash scripts/build-sparkle-tools.sh` supplies the pinned signing tools. Do not commit private keys.
+For local packaging, set `EVBSHOT_SIGN_IDENTITY` and either `EVBSHOT_NOTARY_PROFILE` or the existing `APPLE_API_KEY` file path, `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER`, then run `bash scripts/package-release.sh`. CI uses the same encrypted `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_API_KEY`, `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER` secrets as the sibling EVB projects. `scripts/ci-package-release.sh` imports the certificate into an isolated temporary keychain and removes the keychain and private transfer files on exit. `scripts/verify-release.py dist/release` verifies the finished artifacts on macOS.
+
+The separate Sparkle update-signing key uses the `com.evb.shot.updates` Keychain account locally and the repository Actions secret `SPARKLE_PRIVATE_KEY`. `bash scripts/build-sparkle-tools.sh` supplies the pinned signing tools. Do not commit private keys.
 
 The [landing page](landing/README.md) is a separate static site. It is deployed manually to **evb-shot.vercel.app** using `scripts/deploy-landing.sh`; Git pushes do not deploy the website.
 

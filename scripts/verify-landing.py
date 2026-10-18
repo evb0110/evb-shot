@@ -22,7 +22,8 @@ html = (root/'landing/index.html').read_text()
 page.feed(html)
 assert page.h1 == 1
 assert 'EVBShot' not in html
-assert 'https://github.com/evb0110/evb-shot/releases/latest/download/EVB-Shot-macOS-arm64.zip' in page.links
+assert 'https://github.com/evb0110/evb-shot/releases/latest/download/EVB-Shot-macOS-arm64.dmg' in page.links
+assert 'not notarized' not in html and 'Open Anyway' not in html
 assert 'https://github.com/evb0110/evb-shot/releases/latest' in page.links
 for link in page.links:
     if link.startswith('/'):
