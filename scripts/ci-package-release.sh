@@ -15,6 +15,15 @@ signing_dir=$(mktemp -d "$PWD/.devkit/release-signing.XXXXXX")
 keychain="$signing_dir/signing.keychain-db"
 cleanup() {
     local exit_code=$?
+    # Remove only our entry from the current list, preserving keychains added
+    # by another session while the package was being built.
+    python3 - "$keychain" <<'PY' || exit_code=1
+import shlex, subprocess, sys
+current = shlex.split(subprocess.check_output(['security', 'list-keychains', '-d', 'user'], text=True))
+remaining = [path for path in current if path != sys.argv[1]]
+if remaining != current:
+    subprocess.run(['security', 'list-keychains', '-d', 'user', '-s', *remaining], check=True)
+PY
     if [[ -f "$keychain" ]]; then security delete-keychain "$keychain" || exit_code=1; fi
     python3 - "$signing_dir" <<'PY'
 import shutil, sys
@@ -36,6 +45,15 @@ security set-keychain-settings -lut 21600 "$keychain"
 security unlock-keychain -p "$keychain_password" "$keychain"
 security import "$signing_dir/certificate.p12" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign >/dev/null
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+# --keychain selects the identity, but codesign still uses the standard search
+# list to resolve its certificate chain. A pre-existing login identity can mask
+# this requirement locally; a clean runner has no such fallback.
+python3 - "$keychain" <<'PY'
+import shlex, subprocess, sys
+current = shlex.split(subprocess.check_output(['security', 'list-keychains', '-d', 'user'], text=True))
+subprocess.run(['security', 'list-keychains', '-d', 'user', '-s', sys.argv[1],
+                *(path for path in current if path != sys.argv[1])], check=True)
+PY
 export EVBSHOT_SIGN_IDENTITY
 EVBSHOT_SIGN_IDENTITY=$(security find-identity -v -p codesigning "$keychain" | python3 -c '
 import re, sys
