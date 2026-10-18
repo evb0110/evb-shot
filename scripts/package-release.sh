@@ -34,16 +34,8 @@ ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
 
 # Generate the one-item Sparkle feed from a ZIP-only staging directory.
 bash scripts/generate-update-feed.sh
-python3 - "$app" <<'PY'
-import subprocess, sys, tempfile
-from pathlib import Path
-with tempfile.TemporaryDirectory(prefix='dmg-content-', dir='.devkit') as directory:
-    stage = Path(directory)
-    subprocess.run(['ditto', sys.argv[1], str(stage / 'EVB Shot.app')], check=True)
-    (stage / 'Applications').symlink_to('/Applications')
-    subprocess.run(['hdiutil', 'create', '-volname', 'EVB Shot', '-srcfolder', str(stage),
-                    '-fs', 'APFS', '-format', 'ULFO', '-ov', 'dist/release/EVB-Shot-macOS-arm64.dmg'], check=True)
-PY
+bash scripts/prepare-dmg-tools.sh
+.devkit/dependencies/dmgbuild/bin/python scripts/build-dmg.py "$app" dist/release/EVB-Shot-macOS-arm64.dmg
 dmg="$PWD/dist/release/EVB-Shot-macOS-arm64.dmg"
 signing_options=(--timestamp)
 if [[ -n "${EVBSHOT_SIGN_KEYCHAIN:-}" ]]; then signing_options+=(--keychain "$EVBSHOT_SIGN_KEYCHAIN"); fi

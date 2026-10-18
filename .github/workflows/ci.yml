@@ -25,6 +25,14 @@ jobs:
             bash scripts/run-native-check.sh "dist/EVB Shot.app/Contents/MacOS/EVBShot" --editor-test "$PWD/.devkit/ci-editor-$iteration"
             python3 scripts/verify-editor.py ".devkit/ci-editor-$iteration"
           done
+      - name: Verify Finder installer layout and Retina background
+        run: |
+          bash scripts/prepare-dmg-tools.sh
+          .devkit/dependencies/dmgbuild/bin/python scripts/build-dmg.py "dist/EVB Shot.app" .devkit/installer.dmg
+          mkdir -p .devkit/installer-mounted
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$PWD/.devkit/installer-mounted" .devkit/installer.dmg
+          trap 'hdiutil detach "$PWD/.devkit/installer-mounted"' EXIT
+          .devkit/dependencies/dmgbuild/bin/python scripts/verify-dmg-layout.py .devkit/installer-mounted
       - name: Verify full-resolution scrolling and media exports
         run: |
           bash scripts/run-native-check.sh "dist/EVB Shot.app/Contents/MacOS/EVBShot" --self-test "$PWD/.devkit/ci-core"

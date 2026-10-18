@@ -47,6 +47,7 @@ def manifest(root):
 
 def verify(folder):
     folder = folder.resolve()
+    run('bash', 'scripts/prepare-dmg-tools.sh')
     expected = {'EVB-Shot-macOS-arm64.dmg', 'EVB-Shot-macOS-arm64.zip', 'build-receipt.json', 'appcast.xml'}
     checks = {}
     for line in (folder / 'SHA256SUMS').read_text().splitlines():
@@ -79,6 +80,7 @@ def verify(folder):
         mount.mkdir()
         run('hdiutil', 'attach', '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', str(mount), str(dmg))
         try:
+            run('.devkit/dependencies/dmgbuild/bin/python', 'scripts/verify-dmg-layout.py', str(mount))
             assert (mount / 'Applications').is_symlink() and str((mount / 'Applications').readlink()) == '/Applications'
             installed = mount / 'EVB Shot.app'
             signed(installed)
