@@ -187,27 +187,42 @@ enum SelfTest {
         CFDictionarySetValue(dict, Unmanaged.passUnretained(SCStreamFrameInfo.status.rawValue as CFString).toOpaque(), Unmanaged.passUnretained(NSNumber(value: SCFrameStatus.complete.rawValue)).toOpaque())
         return sample
     }
-    static func audioSample(index: Int, frequency: Double) throws -> CMSampleBuffer {
+    static func audioSample(index: Int, frequency: Double, channels:Int = 2) throws -> CMSampleBuffer {
         let count = 1600
-        var samples = [Float](repeating: 0, count: count * 2)
+        var samples = [Float](repeating: 0, count: count * channels)
         for frame in 0..<count { let value = Float(sin(Double(index * count + frame) * frequency * 2 * .pi / 48000) * 0.2)
-            samples[frame * 2] = value; samples[frame * 2 + 1] = value
+            for channel in 0..<channels { samples[frame * channels+channel] = value }
         }
         var block: CMBlockBuffer?
         CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: samples.count * 4, blockAllocator: nil, customBlockSource: nil, offsetToData: 0, dataLength: samples.count * 4, flags: 0, blockBufferOut: &block)
         guard let block else { throw ShotError("Fixture audio block failed") }
         _ = samples.withUnsafeBytes { CMBlockBufferReplaceDataBytes(with: $0.baseAddress!, blockBuffer: block, offsetIntoDestination: 0, dataLength: $0.count) }
         var asbd = AudioStreamBasicDescription(mSampleRate: 48000, mFormatID: kAudioFormatLinearPCM,
-            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked, mBytesPerPacket: 8, mFramesPerPacket: 1,
-            mBytesPerFrame: 8, mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked, mBytesPerPacket: UInt32(channels*4), mFramesPerPacket: 1,
+            mBytesPerFrame: UInt32(channels*4), mChannelsPerFrame: UInt32(channels), mBitsPerChannel: 32, mReserved: 0)
         var format: CMAudioFormatDescription?
         CMAudioFormatDescriptionCreate(allocator: nil, asbd: &asbd, layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &format)
         var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 48000), presentationTimeStamp: CMTime(value: Int64(index * count), timescale: 48000), decodeTimeStamp: .invalid)
-        var sample: CMSampleBuffer?; var bytesPerSample = 8
+        var sample: CMSampleBuffer?; var bytesPerSample = channels*4
         CMSampleBufferCreateReady(allocator: nil, dataBuffer: block, formatDescription: format, sampleCount: count, sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleSizeEntryCount: 1, sampleSizeArray: &bytesPerSample, sampleBufferOut: &sample)
         guard let sample else { throw ShotError("Fixture audio sample failed") }; return sample
     }
     static func media(folder: URL) async throws {
+        var missingOptions = RecordingOptions(); missingOptions.microphone = true
+        let missingMic = RecordingSession()
+        try missingMic.startFixture(width:160,height:90,options:missingOptions,folder:folder.appendingPathComponent("missing-microphone"))
+        try await missingMic.feedFixture((0..<5).map { try videoSample(index:$0,width:160,height:90) },type:.screen)
+        let missingArtifact = try await missingMic.stop()
+        try check(!missingArtifact.hasAudio && missingArtifact.notice?.lowercased().contains("microphone") == true,"requested microphone without samples must warn instead of silently reporting success")
+        try await EditorTest.mediaWarning(missingArtifact,folder:folder)
+        let monoMic = RecordingSession()
+        try monoMic.startFixture(width:160,height:90,options:missingOptions,folder:folder.appendingPathComponent("mono-microphone"))
+        async let monoVideo:Void = monoMic.feedFixture((0..<60).map { try videoSample(index:$0,width:160,height:90) },type:.screen)
+        async let monoAudio:Void = monoMic.feedFixture((0..<60).map { try audioSample(index:$0,frequency:660,channels:1) },type:.microphone)
+        _ = try await (monoVideo,monoAudio)
+        let monoArtifact = try await monoMic.stop()
+        try check(monoArtifact.hasAudio && monoArtifact.notice == nil,"mono system microphones retain audio through the real writer path")
+        try CaptureFiles.atomicCopy(from:monoArtifact.url,to:folder.appendingPathComponent("mono-system-microphone.mov"))
         var options = RecordingOptions(); options.systemAudio = true; options.microphone = true
         let recording = RecordingSession(); try recording.startFixture(width: 640, height: 360, options: options, folder: folder.appendingPathComponent("media-mixed"))
         let video = try (0..<60).map { try videoSample(index: $0, width: 640, height: 360) }
@@ -232,6 +247,9 @@ enum SelfTest {
         let audio = RecordingSession(); try audio.startFixture(width: 2, height: 2, options: audioOptions, folder: folder.appendingPathComponent("media-audio"))
         try await audio.feedFixture(mic, type: .microphone)
         let audioArtifact = try await audio.stop()
+        var warnedAudio = audioArtifact
+        warnedAudio.notice = "The microphone did not provide audio. The available computer audio has been preserved."
+        try await EditorTest.mediaWarning(warnedAudio,folder:folder)
         try CaptureFiles.atomicCopy(from: audioArtifact.url, to: folder.appendingPathComponent("audio-only.m4a"))
         audioOptions.systemAudio = true
         let mixedAudio = RecordingSession()
@@ -260,6 +278,25 @@ enum SelfTest {
         try check(abs(filmRate-24) < 0.01,"selected 24 FPS is retained in the encoded video")
         try CaptureFiles.atomicCopy(from:filmArtifact.url,to:folder.appendingPathComponent("24-fps.mov"))
         print("PASS 320×180 recording at 24 FPS with 48 native-timestamped frames")
+        let trimmed = try await VideoEditing.export(artifact.url,edits:VideoEdits(start:0.5,end:1.5),includeAudio:true)
+        let trimmedAsset = AVURLAsset(url:trimmed)
+        let trimmedDuration = try await trimmedAsset.load(.duration)
+        try check(abs(trimmedDuration.seconds-1)<0.05,"native temporal trim retains the selected one-second range")
+        try CaptureFiles.atomicCopy(from:trimmed,to:folder.appendingPathComponent("trimmed.mov"))
+        let crop = CGRect(x:400,y:200,width:200,height:140)
+        let cropped = try await VideoEditing.export(artifact.url,edits:VideoEdits(start:0.5,end:1.5,crop:crop),includeAudio:true)
+        let croppedAsset = AVURLAsset(url:cropped), croppedTracks = try await croppedAsset.loadTracks(withMediaType:.video)
+        let croppedSize = try await croppedTracks[0].load(.naturalSize), croppedAudio = try await croppedAsset.loadTracks(withMediaType:.audio)
+        try check(croppedSize == crop.size,"spatial crop exports the exact selected pixels")
+        try check(croppedAudio.count == 1,"trim and crop preserve recorded sound")
+        try CaptureFiles.atomicCopy(from:cropped,to:folder.appendingPathComponent("trimmed-cropped.mov"))
+        let filmCrop = try await VideoEditing.export(filmArtifact.url,edits:VideoEdits(start:0.5,end:1.5,crop:CGRect(x:20,y:20,width:240,height:120)),includeAudio:false)
+        let filmCropTracks = try await AVURLAsset(url:filmCrop).loadTracks(withMediaType:.video)
+        let croppedFilmRate = try await filmCropTracks[0].load(.nominalFrameRate)
+        try check(abs(croppedFilmRate-24)<0.01,"spatial crop preserves 24 FPS")
+        try CaptureFiles.atomicCopy(from:filmCrop,to:folder.appendingPathComponent("24-fps-cropped.mov"))
+        print("PASS native temporal trim, exact pixel spatial crop, preserved sound and 24 FPS")
+        try await EditorTest.videoEditing(video:artifact,folder:folder)
         try await EditorTest.mediaResults(video:artifact,audio:audioArtifact,folder:folder)
     }
     @MainActor static func save(folder: URL) async throws {

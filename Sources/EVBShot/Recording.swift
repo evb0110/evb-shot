@@ -9,6 +9,7 @@ struct RecordingOptions {
     var microphone = false
     var systemAudio = false
     var camera: AVCaptureDevice?
+    var selfiePlacement:SelfiePlacement?
     var corner: CameraCorner = .bottomRight
     var audioOnly = false
     var cursor = true
@@ -51,9 +52,15 @@ final class RecordingSession: NSObject, SCStreamOutput, SCStreamDelegate, @unche
     private var usesFrameClock = false
     private var fixtureFinished = Set<SCStreamOutputType>()
     private var stoppingTask: Task<CaptureArtifact, Error>?
+    private var selfiePlacement:SelfiePlacement?
+    @MainActor private var configuration:SCStreamConfiguration?
+    var onCameraFrame: (@MainActor @Sendable (CameraFrame)->Void)?
+    var onMicrophoneLevel: (@MainActor @Sendable (Float)->Void)?
+    private var lastMeterTime = CMTime.invalid
 
-    func start(surface: CaptureSurface, options: RecordingOptions) async throws {
+    @MainActor func start(surface: CaptureSurface, options: RecordingOptions) async throws {
         self.options = options
+        selfiePlacement = options.selfiePlacement
         usesFrameClock = !options.audioOnly
         if options.audioOnly && !options.microphone && !options.systemAudio {
             throw ShotError("Choose microphone or system audio for an audio-only recording.")
@@ -64,6 +71,8 @@ final class RecordingSession: NSObject, SCStreamOutput, SCStreamDelegate, @unche
         if let device = options.camera, !options.audioOnly {
             let camera = CameraCapture(); self.camera = camera
             camera.onFailure = { [weak self] error in self?.queue.async { self?.fail(error) } }
+            let delivery = onCameraFrame.map { CameraPreviewDelivery(deliver:$0) }
+            camera.onFrame = { frame in delivery?.submit(frame) }
             do { try await camera.start(device: device) } catch { await camera.stop(); self.camera = nil; throw error }
         }
         do {
@@ -73,9 +82,12 @@ final class RecordingSession: NSObject, SCStreamOutput, SCStreamDelegate, @unche
             pixelSize = CGSize(width: config.width, height: config.height)
             config.capturesAudio = options.systemAudio
             config.captureMicrophone = options.microphone
+            if options.microphone { config.microphoneCaptureDeviceID = try SystemMicrophone.current().uid }
+            configuration = config
             config.excludesCurrentProcessAudio = true
             config.sampleRate = 48_000; config.channelCount = 2
             try prepareWriter(width: config.width, height: config.height)
+            if selfiePlacement == nil { selfiePlacement = .initial(size:pixelSize,corner:options.corner) }
             if options.audioOnly { config.width = 2; config.height = 2 }
             let stream = SCStream(filter: surface.filter, configuration: config, delegate: self)
             self.stream = stream
@@ -95,6 +107,13 @@ final class RecordingSession: NSObject, SCStreamOutput, SCStreamDelegate, @unche
             writer?.cancelWriting(); await camera?.stop(); camera = nil
             throw error
         }
+    }
+
+    func updateSelfiePlacement(_ placement:SelfiePlacement) { queue.async { self.selfiePlacement = placement } }
+    @MainActor func updateMicrophoneDevice(_ device:MicrophoneDevice) async throws {
+        guard options.microphone, let configuration, let stream, configuration.microphoneCaptureDeviceID != device.uid else { return }
+        configuration.microphoneCaptureDeviceID = device.uid
+        try await stream.updateConfiguration(configuration)
     }
 
     private func prepareWriter(width: Int, height: Int, fixtureFolder: URL? = nil) throws {
@@ -196,9 +215,38 @@ final class RecordingSession: NSObject, SCStreamOutput, SCStreamDelegate, @unche
             let input = type == .audio ? systemAudio : microphone
             guard let input, input.isReadyForMoreMediaData else { return }
             if let last = lastAudio[type], CMTimeCompare(pts, last) <= 0 { return }
-            if input.append(sample) { lastAudio[type] = pts }
+            if input.append(sample) {
+                lastAudio[type] = pts
+                if type == .microphone {
+                    let now = CMClockGetTime(CMClockGetHostTimeClock())
+                    if !lastMeterTime.isValid || CMTimeSubtract(now,lastMeterTime).seconds >= 0.1 {
+                        lastMeterTime = now
+                        let level = Self.microphoneLevel(sample), callback = onMicrophoneLevel
+                        DispatchQueue.main.async { callback?(level) }
+                    }
+                }
+            }
             else { fail(writer.error ?? ShotError("The audio encoder could not append a buffer.")) }
         }
+    }
+
+    static func microphoneLevel(_ sample:CMSampleBuffer) -> Float {
+        guard let format = CMSampleBufferGetFormatDescription(sample), let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(format),
+              let block = CMSampleBufferGetDataBuffer(sample) else { return 0 }
+        var contiguous = 0, count = 0, data:UnsafeMutablePointer<Int8>?
+        guard CMBlockBufferGetDataPointer(block,atOffset:0,lengthAtOffsetOut:&contiguous,totalLengthOut:&count,dataPointerOut:&data) == noErr,
+              let data, contiguous == count else { return 0 }
+        var peak:Float = 0
+        if asbd.pointee.mBitsPerChannel == 32 && asbd.pointee.mFormatFlags & kAudioFormatFlagIsFloat != 0 {
+            data.withMemoryRebound(to:Float.self,capacity:count/4) { values in
+                for index in stride(from:0,to:count/4,by:max(1,count/4096)) { peak = max(peak,abs(values[index])) }
+            }
+        } else if asbd.pointee.mBitsPerChannel == 16 {
+            data.withMemoryRebound(to:Int16.self,capacity:count/2) { values in
+                for index in stride(from:0,to:count/2,by:max(1,count/2048)) { peak = max(peak,Float(abs(Int(values[index])))/32768) }
+            }
+        }
+        return peak > 0 ? max(0,min(1,(20*log10(peak)+60)/60)) : 0
     }
 
     private func startFrameClock() {
@@ -222,7 +270,8 @@ final class RecordingSession: NSObject, SCStreamOutput, SCStreamDelegate, @unche
             guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &target) == kCVReturnSuccess, let target else {
                 fail(ShotError("The video encoder ran out of pixel buffers.")); return
             }
-            let image = SelfieCompositor.image(screen: CIImage(cvPixelBuffer: buffer), camera: CIImage(cvPixelBuffer: cameraBuffer), size: pixelSize, corner: options.corner)
+            let image = SelfieCompositor.image(screen:CIImage(cvPixelBuffer:buffer),camera:CIImage(cvPixelBuffer:cameraBuffer),
+                size:pixelSize,placement:selfiePlacement ?? .initial(size:pixelSize,corner:options.corner))
             context.render(image, to: target, bounds: CGRect(origin: .zero, size: pixelSize), colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
             final = target
         }
@@ -278,9 +327,14 @@ final class RecordingSession: NSObject, SCStreamOutput, SCStreamDelegate, @unche
         }
         let normalized = try await MediaExport.normalized(raw, includeAudio: true)
         let audioTracks = try await AVURLAsset(url: normalized).loadTracks(withMediaType: .audio)
+        var notices:[String] = []
+        if let failure { notices.append("Capture was interrupted: \(failure.localizedDescription). The available media has been recovered.") }
+        if options.microphone && lastAudio[.microphone] == nil {
+            notices.append("The microphone did not provide audio. Check the system input device and microphone access. The available recording has been preserved.")
+        }
         return CaptureArtifact(url: normalized, kind: options.audioOnly ? .audio : .video,
             width: options.audioOnly ? 0 : Int(pixelSize.width), height: options.audioOnly ? 0 : Int(pixelSize.height),
             hasAudio: !audioTracks.isEmpty, preview: nil,
-            notice: failure.map { "Capture was interrupted: \($0.localizedDescription). The available media has been recovered." })
+            notice:notices.isEmpty ? nil : notices.joined(separator:" "))
     }
 }

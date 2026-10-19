@@ -54,4 +54,25 @@ for name in ['audio-only.m4a', 'audio-only-mixed.m4a']:
 static = probe('static-desktop.mov')
 assert float(static['format']['duration']) > .65
 assert int(static['streams'][0]['nb_frames']) >= 18
+mono = probe('mono-system-microphone.mov')
+assert len([s for s in mono['streams'] if s['codec_type'] == 'audio']) == 1
+mono_pcm = array.array('f', subprocess.check_output(['ffmpeg', '-v', 'error', '-i', str(folder / 'mono-system-microphone.mov'), '-map', '0:a:0', '-ac', '1', '-ar', '48000', '-f', 'f32le', '-']))
+assert len(mono_pcm) > 48000 and max(abs(v) for v in mono_pcm) > .15, 'Mono system microphone lost its recorded audio'
+print('PASS mono system microphone retains an audible audio track through encoding')
+for name, dimensions, rate in [('trimmed.mov',(640,360),'30/1'),('trimmed-cropped.mov',(200,140),'30/1'),('24-fps-cropped.mov',(240,120),'24/1')]:
+    metadata = probe(name)
+    track = next(s for s in metadata['streams'] if s['codec_type'] == 'video')
+    assert (track['width'],track['height']) == dimensions and track['r_frame_rate'] == rate, (name,track)
+    assert abs(float(metadata['format']['duration'])-1) < .05, (name,metadata['format']['duration'])
+for name, width, point in [('trimmed.mov',640,(558,295)),('trimmed-cropped.mov',200,(158,95))]:
+    image = subprocess.check_output(['ffmpeg','-v','error','-i',str(folder/name),'-frames:v','1','-f','rawvideo','-pix_fmt','rgb24','-'])
+    offset = (point[1]*width+point[0])*3
+    r,g,b = image[offset:offset+3]
+    assert r>200 and 70<g<160 and b<80, ('Saved crop must contain the original selected pixels',name,r,g,b)
+    offset = (20*width+20)*3
+    r,g,b = image[offset:offset+3]
+    assert 50<g<72, ('Trim begins at source frame 15 rather than frame zero',name,r,g,b)
+    signal = array.array('f',subprocess.check_output(['ffmpeg','-v','error','-i',str(folder/name),'-map','0:a:0','-ac','1','-ar','48000','-f','f32le','-']))
+    assert len(signal)>45000 and max(abs(v) for v in signal)>.1, ('Edited audio must remain audible',name)
+print('PASS temporal trim, selected crop pixels and dimensions, preserved 24/30 FPS, and decoded edited audio')
 print('PASS native dimensions/FPS, 60 encoded frames, one mixed audio track, silent video with identical compressed video, audio-only outputs, static desktop clock')

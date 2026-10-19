@@ -16,6 +16,7 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
     private let resolution = NSPopUpButton()
     private let fps = NSPopUpButton()
     private let microphone = NSButton(checkboxWithTitle:"Microphone",target:nil,action:nil)
+    private let microphoneInputLabel = NSTextField(labelWithString:"")
     private let systemAudio = NSButton(checkboxWithTitle:"Computer audio",target:nil,action:nil)
     private let camera = NSButton(checkboxWithTitle:"Selfie camera",target:nil,action:nil)
     private let devices = NSPopUpButton()
@@ -43,6 +44,9 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
     let recordingOverlay: RecordingOverlay
     private var pendingFailure:Error?
     private var initialSelection = false
+    let selfieOverlay:SelfieOverlay
+    private let microphoneMonitor = SystemMicrophoneMonitor()
+    private var microphoneUpdateTask:Task<Void,Never>?
     var onFinish:((CaptureArtifact)->Void)?
     var onClose:(()->Void)?
     var onState:((Bool)->Void)?
@@ -55,6 +59,7 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
          openSettings:@escaping (URL)->Void = { NSWorkspace.shared.open($0) }) {
         self.permissionAccess = permissionAccess; self.openSettings = openSettings; presentation = overlayPresentation
         recordingOverlay = RecordingOverlay(presentation:overlayPresentation)
+        selfieOverlay = SelfieOverlay(presentation:overlayPresentation)
         source = .display(display,nil)
         let panel = NSPanel(contentRect:CGRect(x:0,y:0,width:520,height:190),styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
         panel.title = "Record with EVB Shot"; panel.isReleasedWhenClosed = false
@@ -63,6 +68,8 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
         panel.isMovableByWindowBackground = true
         panel.collectionBehavior = [.canJoinAllSpaces,.fullScreenAuxiliary]
         super.init(window:panel); panel.delegate = self
+        microphoneMonitor.onChange = { [weak self] device in self?.systemMicrophoneChanged(device) }
+        microphoneMonitor.start()
         let material = NSVisualEffectView(); material.material = .popover; material.state = .active
         material.wantsLayer = true; material.layer?.cornerRadius = 12; material.layer?.masksToBounds = true
         material.layer?.borderWidth = 1; material.layer?.borderColor = NSColor.separatorColor.cgColor
@@ -100,6 +107,11 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
         for control in [camera,microphone,systemAudio,audioOnly] { control.target = self; control.action = #selector(updateOptions) }
         let inputs = NSStackView(views:[microphone,systemAudio,camera]); inputs.spacing = 18
         stack.addArrangedSubview(inputs)
+        microphoneInputLabel.font = .systemFont(ofSize:10); microphoneInputLabel.textColor = .secondaryLabelColor
+        microphoneInputLabel.lineBreakMode = .byTruncatingMiddle
+        microphoneInputLabel.setAccessibilityIdentifier("SystemMicrophoneInput")
+        microphoneInputLabel.widthAnchor.constraint(equalToConstant:488).isActive = true
+        stack.addArrangedSubview(microphoneInputLabel)
         corner.addItems(withTitles:CameraCorner.allCases.map(\.rawValue)); corner.setAccessibilityLabel("Selfie position")
         cameraDevices = AVCaptureDevice.DiscoverySession(deviceTypes:[.builtInWideAngleCamera,.external,.continuityCamera],mediaType:.video,position:.unspecified).devices
         devices.addItems(withTitles:cameraDevices.map(\.localizedName))
@@ -137,6 +149,11 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func updateOptions() {
+        let input = try? SystemMicrophone.current()
+        microphone.title = "Microphone"
+        microphone.toolTip = input.map { "System input: \($0.name)" } ?? "No system input microphone"
+        microphoneInputLabel.stringValue = microphone.toolTip!
+        microphoneInputLabel.isHidden = microphone.state == .off
         let isAudio = audioOnly.state == .on
         resolution.isEnabled = !isAudio; fps.isEnabled = !isAudio
         sourceMode.isEnabled = !isAudio
@@ -157,6 +174,21 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
         }
         withoutButton.isEnabled = blockedPermission != .microphone || !isAudio || systemAudio.state == .on
         fitControls()
+    }
+    private func systemMicrophoneChanged(_ device:MicrophoneDevice?) {
+        microphone.toolTip = device.map { "System input: \($0.name)" } ?? "No system input microphone"
+        microphoneInputLabel.stringValue = microphone.toolTip!
+        guard phase == .recording, microphone.state == .on, let session else { return }
+        recordingOverlay.updateMicrophone(device)
+        let previous = microphoneUpdateTask
+        microphoneUpdateTask = Task { [weak self] in
+            await previous?.value
+            guard let self, self.phase == .recording, self.session === session else { return }
+            do {
+                guard let device else { throw ShotError("The system input microphone disconnected.") }
+                try await session.updateMicrophoneDevice(device)
+            } catch { self.pendingFailure = error; self.stop() }
+        }
     }
     private func fitControls() {
         window?.contentView?.layoutSubtreeIfNeeded()
@@ -271,12 +303,23 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
                 options.audioOnly = audioOnly.state == .on
                 if !options.audioOnly, camera.state == .on, cameraDevices.indices.contains(devices.indexOfSelectedItem) { options.camera = cameraDevices[devices.indexOfSelectedItem] }
                 options.corner = CameraCorner.allCases[corner.indexOfSelectedItem]
+                if options.camera != nil {
+                    options.selfiePlacement = .initial(size:CGSize(width:Double(surface.width)*options.scale,height:Double(surface.height)*options.scale),corner:options.corner)
+                }
                 if !options.audioOnly {
                     let windowID:CGWindowID? = { if case let .window(id) = source { return id }; return nil }()
                     recordingOverlay.onStop = { [weak self] in self?.stop() }
-                    recordingOverlay.show(region:surface.screenRect,windowID:windowID)
+                    recordingOverlay.show(region:surface.screenRect,windowID:windowID,
+                        microphone:options.microphone ? try SystemMicrophone.current() : nil,systemAudio:options.systemAudio)
                 }
                 let recording = RecordingSession(); session = recording
+                if options.camera != nil && !options.audioOnly {
+                    selfieOverlay.show(region:surface.screenRect,placement:options.selfiePlacement!)
+                    selfieOverlay.onChange = { [weak recording] in recording?.updateSelfiePlacement($0) }
+                    recordingOverlay.onRegionChange = { [weak self] in self?.selfieOverlay.updateRegion($0) }
+                    recording.onCameraFrame = { [weak self] in self?.selfieOverlay.update($0) }
+                }
+                recording.onMicrophoneLevel = { [weak self] in self?.recordingOverlay.updateMicrophoneLevel($0) }
                 recording.onFailure = { [weak self] error in
                     guard let self else { return }
                     if self.phase == .preparing { self.pendingFailure = error }
@@ -284,6 +327,7 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
                 }
                 try await recording.start(surface:surface,options:options)
                 phase = .recording; startedAt = Date(); onState?(true); onElapsed?("00:00")
+                if options.microphone { systemMicrophoneChanged(try? SystemMicrophone.current()) }
                 recordingOverlay.didStart()
                 if pendingFailure != nil { stop(); return }
                 timer = Timer.scheduledTimer(withTimeInterval:1,repeats:true) { [weak self] _ in
@@ -301,6 +345,7 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
         guard let session, phase == .recording else { return }
         phase = .finishing; timer?.invalidate(); timer = nil
         recordingOverlay.hide()
+        selfieOverlay.hide()
         onElapsed?("Saving…")
         Task { [self] in
             do {
@@ -313,6 +358,7 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
     }
     private func restoreAfterFailure(_ error:Error) {
         recordingOverlay.hide()
+        selfieOverlay.hide()
         phase = .configuring; timer?.invalidate(); timer = nil
         onState?(false); configurationViews.forEach { $0.isEnabled = true }; cancelButton.isEnabled = true
         settingsButton.isEnabled = true; startButton.title = "Start Recording"
@@ -338,7 +384,7 @@ final class RecordingController: NSWindowController, NSWindowDelegate {
     }
     @objc private func cancel() { guard !hasActiveWork else { return }; phase = .closed; close() }
     func windowShouldClose(_ sender:NSWindow) -> Bool { !hasActiveWork }
-    func windowWillClose(_ notification:Notification) { phase = .closed; recordingOverlay.hide(); regionOutline?.orderOut(nil); regionOutline = nil; timer?.invalidate(); timer = nil; onClose?() }
+    func windowWillClose(_ notification:Notification) { phase = .closed; recordingOverlay.hide(); selfieOverlay.hide(); microphoneMonitor.stop(); regionOutline?.orderOut(nil); regionOutline = nil; timer?.invalidate(); timer = nil; onClose?() }
 }
 
 private final class RecordingRegionView:NSView {
