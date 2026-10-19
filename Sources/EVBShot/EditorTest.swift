@@ -71,13 +71,13 @@ enum EditorTest {
         }
         let controller = ResultController(video,saveSettings:settings,pasteboard:board,mutePlayback:true)
         defer { controller.close() }
-        try SelfTest.check(controller.window!.frame.width <= 500 && controller.window!.frame.height <= 400,"Stop must open a compact media preview instead of another large window")
         let available = NSScreen.underPointer.visibleFrame.insetBy(dx:16,dy:16)
-        try SelfTest.check(abs(controller.window!.frame.maxX-available.maxX)<1 && abs(controller.window!.frame.minY-available.minY)<1,"recording preview opens in the screen corner")
+        try SelfTest.check(controller.window!.styleMask.contains(.resizable) && controller.window!.frame.width >= min(900,available.width) && available.contains(controller.window!.frame),"video review is large, resizable, and bounded to one display")
         controller.window!.setFrameOrigin(CGPoint(x:-20000,y:-20000))
         controller.showWindow(nil)
         controller.window!.contentView!.layoutSubtreeIfNeeded()
-        try SelfTest.check(controller.window!.frame.width <= 500 && controller.window!.frame.height <= 400 && controller.window!.contentView!.fittingSize.width <= 500,"native player intrinsic size cannot enlarge the corner preview after showing")
+        try SelfTest.check(controller.window!.frame.width <= available.width && controller.window!.frame.height <= available.height,"native player stays within one display after showing")
+        await controller.videoTask?.value
         let views = descendants(controller.window!.contentView!)
         guard let poster = views.compactMap({ $0 as? NSImageView }).first(where: { $0.identifier?.rawValue == "RecordingPoster" }) else { throw ShotError("Video review needs a first-frame preview") }
         for _ in 0..<100 where poster.image == nil { try await Task.sleep(nanoseconds:20_000_000) }
@@ -95,8 +95,8 @@ enum EditorTest {
             include.state = .off
         }
         try action(controller,"Save & Copy Path").performClick(nil); await controller.saveTask?.value
-        guard let saved = controller.lastSavedURL else { throw ShotError("Compact preview must save through its native button") }
-        try SelfTest.check(!controller.window!.isVisible && board.string(forType:.string) == "'\(saved.path)'","compact video save closes and copies its quoted path")
+        guard let saved = controller.lastSavedURL else { throw ShotError("Video preview must save through its native button") }
+        try SelfTest.check(!controller.window!.isVisible && board.string(forType:.string) == "'\(saved.path)'","video save closes and copies its quoted path")
         let audioTracks = try await AVURLAsset(url:saved).loadTracks(withMediaType:.audio)
         try SelfTest.check(audioTracks.isEmpty,"Include audio off produces a silent saved video")
         if let audio {
@@ -119,7 +119,83 @@ enum EditorTest {
             try action(audioController,"Save").performClick(nil); await audioController.saveTask?.value
             try SelfTest.check(audioController.lastSavedURL != nil && !audioController.window!.isVisible && board.string(forType:.string) == "keep clipboard","compact audio Save closes and preserves the clipboard")
         }
-        print("PASS compact corner media review, decoded poster, playback, optional audio removal, and immediate save buttons")
+        print("PASS large resizable video review, compact audio card, decoded poster, playback, audio removal, and immediate save buttons")
+    }
+
+    static func videoEditing(video:CaptureArtifact,folder:URL) async throws {
+        let suite = "com.evb.shot.video-edit-test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName:suite)!
+        let settings = CaptureSaveSettings(defaults:defaults)
+        defer { defaults.removePersistentDomain(forName:suite) }
+        settings.folder = folder.appendingPathComponent("video-edit-saves")
+        let board = NSPasteboard(name:NSPasteboard.Name(suite)); defer { board.releaseGlobally() }
+        let controller = ResultController(video,saveSettings:settings,pasteboard:board,mutePlayback:true)
+        defer { controller.close() }
+        controller.window!.setFrameOrigin(CGPoint(x:-20000,y:-20000)); controller.showWindow(nil)
+        await controller.videoTask?.value
+        func descendants(_ view:NSView)->[NSView] { [view]+view.subviews.flatMap(descendants) }
+        let buttons = controller.window!.toolbar!.items.compactMap(\.view).flatMap(descendants).compactMap { $0 as? NSButton }
+        func button(_ title:String)throws->NSButton {
+            guard let button = buttons.first(where: { $0.title == title }) else { throw ShotError("Missing video action \(title)") }; return button
+        }
+        guard let view = controller.videoPlayerView, let item = view.player?.currentItem else { throw ShotError("Missing native video player") }
+        for _ in 0..<100 where !view.canBeginTrimming { try await Task.sleep(for:.milliseconds(20)) }
+        try SelfTest.check(view.canBeginTrimming,"loaded video supports native QuickTime trimming")
+        try button("Trim").performClick(nil)
+        try await Task.sleep(for:.milliseconds(150))
+        try await render(controller,name:"video-trim",folder:folder)
+        let nativeButtons = descendants(view).compactMap { $0 as? NSButton }
+        guard let trim = nativeButtons.first(where: { $0.title == "Trim" }) else { throw ShotError("Native trim UI missing confirmation; buttons: \(nativeButtons.map(\.title))") }
+        item.reversePlaybackEndTime = CMTime(seconds:0.5,preferredTimescale:60000)
+        item.forwardPlaybackEndTime = CMTime(seconds:1.5,preferredTimescale:60000)
+        trim.performClick(nil)
+        for _ in 0..<100 where !(try button("Crop Frame")).isEnabled { try await Task.sleep(for:.milliseconds(20)) }
+        try SelfTest.check(abs(controller.videoEdits.start-0.5)<0.001 && controller.videoEdits.end == 1.5,"native trimming commits its selected range to export")
+        let cropButton = try button("Crop Frame")
+        try SelfTest.check(cropButton.isEnabled,"AVKit trim completion restores the video editing actions")
+        try button("Crop Frame").performClick(nil)
+        guard let crop = controller.videoCropView, !crop.isHidden else { throw ShotError("Crop Frame needs a visible crop overlay") }
+        func point(_ pixel:CGPoint)->CGPoint {
+            let rect = crop.videoRect
+            return CGPoint(x:rect.minX+pixel.x*rect.width/crop.sourceSize.width,y:rect.minY+pixel.y*rect.height/crop.sourceSize.height)
+        }
+        func drag(_ from:CGPoint,_ to:CGPoint) {
+            func event(_ type:NSEvent.EventType,_ pixel:CGPoint)->NSEvent {
+                NSEvent.mouseEvent(with:type,location:crop.convert(point(pixel),to:nil),modifierFlags:[],timestamp:0,windowNumber:controller.window!.windowNumber,context:nil,eventNumber:0,clickCount:1,pressure:1)!
+            }
+            crop.mouseDown(with:event(.leftMouseDown,from)); crop.mouseDragged(with:event(.leftMouseDragged,to)); crop.mouseUp(with:event(.leftMouseUp,to))
+        }
+        drag(.zero,CGPoint(x:400,y:200)); drag(CGPoint(x:640,y:360),CGPoint(x:600,y:340))
+        try SelfTest.check(crop.selection == CGRect(x:400,y:200,width:200,height:140),"native crop handles map display points to exact original video pixels")
+        try await render(controller,name:"video-crop",folder:folder)
+        try button("Crop").performClick(nil); await controller.videoTask?.value
+        try SelfTest.check(crop.isHidden && view.player?.currentItem?.videoComposition?.renderSize == CGSize(width:200,height:140),"Apply previews the same pixel crop used by export")
+        let reset = try button("Reset")
+        try SelfTest.check(reset.isEnabled,"applied video edits can be reset")
+        let output = AVPlayerItemVideoOutput(pixelBufferAttributes:[kCVPixelBufferPixelFormatTypeKey as String:kCVPixelFormatType_32BGRA])
+        item.add(output)
+        let previewTime = CMTime(seconds:0.75,preferredTimescale:60000)
+        await view.player!.seek(to:previewTime,toleranceBefore:.zero,toleranceAfter:.zero)
+        var preview:CVPixelBuffer?
+        for _ in 0..<100 where preview == nil {
+            preview = output.copyPixelBuffer(forItemTime:previewTime,itemTimeForDisplay:nil)
+            if preview == nil { try await Task.sleep(for:.milliseconds(20)) }
+        }
+        try SelfTest.check(preview.map { CVPixelBufferGetWidth($0) == 200 && CVPixelBufferGetHeight($0) == 140 } == true,"the native player actually renders the selected crop at its pixel dimensions")
+        if let preview, let image = CIContext().createCGImage(CIImage(cvPixelBuffer:preview),from:CGRect(x:0,y:0,width:200,height:140)) {
+            let bitmap = NSBitmapImageRep(cgImage:image), pixel = bitmap.colorAt(x:158,y:95)?.usingColorSpace(.deviceRGB)
+            try SelfTest.check((pixel?.redComponent ?? 0)>0.75 && (pixel?.blueComponent ?? 1)<0.4,"native player renders the selected source pixels, not just a crop-sized surface")
+            try CaptureEngine.writePNG(image,to:folder.appendingPathComponent("native-player-cropped-frame.png"))
+        } else { throw ShotError("Native player did not provide a decoded crop frame") }
+        item.remove(output)
+        try await render(controller,name:"video-cropped-preview",folder:folder)
+        try button("Save & Copy Path").performClick(nil); await controller.saveTask?.value
+        guard let saved = controller.lastSavedURL else { throw ShotError("Edited video save failed") }
+        let asset = AVURLAsset(url:saved), tracks = try await asset.loadTracks(withMediaType:.video)
+        let savedSize = try await tracks[0].load(.naturalSize), savedDuration = try await asset.load(.duration)
+        try SelfTest.check(savedSize == CGSize(width:200,height:140),"native Save exports the previewed crop")
+        try SelfTest.check(abs(savedDuration.seconds-1)<0.05 && !controller.window!.isVisible && board.string(forType:.string) == "'\(saved.path)'","edited Save keeps temporal trim, closes, and copies its quoted full path")
+        print("PASS native AVKit trim confirmation, crop handle gestures, matching preview/export, and edited Save & Copy Path")
     }
 
     static func landingPreview(folder:URL) async throws {
@@ -166,8 +242,8 @@ enum EditorTest {
         let window = controller.window!; window.setFrameOrigin(CGPoint(x:-20000,y:-20000)); controller.showWindow(nil)
         window.contentView!.layoutSubtreeIfNeeded()
         let warning = window.contentView!.subviews.compactMap { $0 as? NSTextField }.first { $0.identifier?.rawValue == "CaptureWarning" }
-        try SelfTest.check(warning?.stringValue.lowercased().contains("microphone") == true && (warning?.frame.height ?? 0)>25,"missing microphone has a readable wrapping warning in compact review")
-        try SelfTest.check(window.frame.height <= (artifact.kind == .audio ? 280 : 400),"warnings preserve compact media window limits")
+        try SelfTest.check(warning?.stringValue.lowercased().contains("microphone") == true && (warning?.frame.height ?? 0)>12,"missing microphone has a readable warning in review")
+        try SelfTest.check(window.frame.height <= (artifact.kind == .audio ? 280 : NSScreen.underPointer.visibleFrame.height),"warnings preserve bounded media window limits")
         try await renderWindow(window,name:artifact.kind == .audio ? "audio-input-warning" : "microphone-warning",folder:folder)
     }
     static func liveSelfieControls(folder:URL) async throws {

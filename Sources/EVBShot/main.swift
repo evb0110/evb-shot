@@ -182,7 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let result = ResultController(artifact); results.append(result)
         result.onClose = { [weak self, weak result] in self?.results.removeAll { $0 === result }; self?.updateActivationPolicy() }
         updateActivationPolicy()
-        if artifact.kind == .image { result.showWindow(nil); NSApp.activate(ignoringOtherApps:true) }
+        if artifact.kind != .audio { result.showWindow(nil); NSApp.activate(ignoringOtherApps:true) }
         else { result.window?.orderFrontRegardless() }
     }
     @objc private func openDrafts() {
