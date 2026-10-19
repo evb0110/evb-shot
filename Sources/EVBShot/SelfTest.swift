@@ -348,8 +348,15 @@ enum SelfTest {
             try check(board.string(forType:.string) == "'\(url.path)'" && !audioTracks.isEmpty,"audio/video button saves playable audio and copies the single-quoted absolute path")
             if kind == .video { let videoTracks = try await asset.loadTracks(withMediaType:.video); try check(!videoTracks.isEmpty,"saved recording retains its video track") }
             controller.close()
+            let mediaController = ResultController(CaptureArtifact(url:folder.appendingPathComponent(filename),kind:kind,width:640,height:360,hasAudio:true),saveSettings:settings,pasteboard:board,mutePlayback:true)
+            try await EditorTest.render(mediaController,name:kind == .video ? "video-copy-actions" : "audio-copy-actions",folder:folder)
+            guard let mediaURL = try await EditorTest.saveAndCheck(mediaController,mode:.media) else { throw ShotError("Save & Copy produced no media file") }
+            try EditorTest.checkCopiedFile(board,url:mediaURL)
+            try check(board.string(forType:.string) == nil && board.data(forType:.png) == nil,"audio/video media copy offers a file attachment instead of path text or a preview")
+            let mediaAudio = try await AVURLAsset(url:mediaURL).loadTracks(withMediaType:.audio)
+            try check(!mediaAudio.isEmpty,"copied recording file retains its audio")
         }
-        print("PASS exclusive same-name concurrent saves and actual audio/video Save & Copy Path buttons with no dialog")
+        print("PASS concurrent saves and separate audio/video path and native media-copy buttons, with no dialog")
     }
     @MainActor static func renderUI(folder: URL, image: CGImage) throws {
         let recorder = RecordingController(display: CGMainDisplayID())

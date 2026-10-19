@@ -146,9 +146,10 @@ enum EditorTest {
             guard let button = buttons.first(where: { $0.title == title }) else { throw ShotError("Missing video action \(title)") }; return button
         }
         guard let view = controller.videoPlayerView, let item = view.player?.currentItem else { throw ShotError("Missing native video player") }
-        for _ in 0..<100 where !view.canBeginTrimming { try await Task.sleep(for:.milliseconds(20)) }
-        try SelfTest.check(view.canBeginTrimming,"loaded video supports native QuickTime trimming")
-        try button("Trim").performClick(nil)
+        let trimAction = try button("Trim")
+        for _ in 0..<100 where !trimAction.isEnabled { try await Task.sleep(for:.milliseconds(20)) }
+        try SelfTest.check(view.canBeginTrimming && trimAction.isEnabled,"loaded video enables its actual native Trim action without another UI interaction")
+        trimAction.performClick(nil)
         try await Task.sleep(for:.milliseconds(150))
         try await render(controller,name:"video-trim",folder:folder)
         let nativeButtons = descendants(view).compactMap { $0 as? NSButton }
@@ -198,13 +199,14 @@ enum EditorTest {
         } else { throw ShotError("Native player did not provide a decoded crop frame") }
         item.remove(output)
         try await render(controller,name:"video-cropped-preview",folder:folder)
-        try button("Save & Copy Path").performClick(nil); await controller.saveTask?.value
+        try button("Save & Copy").performClick(nil); await controller.saveTask?.value
         guard let saved = controller.lastSavedURL else { throw ShotError("Edited video save failed") }
         let asset = AVURLAsset(url:saved), tracks = try await asset.loadTracks(withMediaType:.video)
         let savedSize = try await tracks[0].load(.naturalSize), savedDuration = try await asset.load(.duration)
         try SelfTest.check(savedSize == CGSize(width:200,height:140),"native Save exports the previewed crop")
-        try SelfTest.check(abs(savedDuration.seconds-1)<0.05 && !controller.window!.isVisible && board.string(forType:.string) == "'\(saved.path)'","edited Save keeps temporal trim, closes, and copies its quoted full path")
-        print("PASS native AVKit trim confirmation, crop handle gestures, matching preview/export, and edited Save & Copy Path")
+        try SelfTest.check(abs(savedDuration.seconds-1)<0.05 && !controller.window!.isVisible && board.string(forType:.string) == nil,"edited Save & Copy keeps temporal trim, closes, and copies media instead of path text")
+        try checkCopiedFile(board,url:saved)
+        print("PASS native AVKit trim confirmation, crop handle gestures, matching preview/export, and edited Save & Copy media")
     }
 
     static func landingPreview(folder:URL) async throws {
@@ -462,12 +464,21 @@ enum EditorTest {
         try SelfTest.check(second.deletingLastPathComponent() == settings.folder && second != saved && board.string(forType:.string) == "'\(saved.path)'","Save uses changed settings immediately and preserves the clipboard")
         let third = try await saveAndCheck(saveController(),copy:false)!
         try SelfTest.check(third != second && FileManager.default.fileExists(atPath:second.path),"repeated Save preserves prior captures")
+        let mediaController = saveController()
+        try await render(mediaController,name:"save-copy-actions",folder:folder)
+        let copiedImage = try await saveAndCheck(mediaController,mode:.media)!
+        try SelfTest.check(board.data(forType:.png) == expectedOutput,"Save & Copy puts the full-resolution cropped, annotated PNG on the clipboard")
+        try SelfTest.check(board.string(forType:.string) == nil,"media copy does not paste a quoted path as text")
+        let pastedImage = NSImage(pasteboard:board)
+        try SelfTest.check(pastedImage != nil && pastedImage!.size == CGSize(width:550,height:370),"native image paste reads the edited image at its original pixel dimensions")
+        try checkCopiedFile(board,url:copiedImage)
         let sentinel = "clipboard must survive failed Save"
         board.clearContents(); board.setString(sentinel,forType:.string)
         preferences.setSaveFolder(source.appendingPathComponent("not-a-directory"))
         let failedSave = saveController()
         _ = try await saveAndCheck(failedSave,copy:true,expectSuccess:false)
         _ = try await saveAndCheck(failedSave,copy:false,expectSuccess:false)
+        _ = try await saveAndCheck(failedSave,mode:.media,expectSuccess:false)
         try SelfTest.check(failedSave.lastSavedURL == nil && board.string(forType:.string) == sentinel && failedSave.canvas!.editingEnabled,"failed direct save preserves edits and clipboard, then re-enables editing")
         // The same editor must recover from a failed save and dismiss on success.
         preferences.setSaveFolder(saved.deletingLastPathComponent())
@@ -479,7 +490,7 @@ enum EditorTest {
         settingsButtons.first { $0.title == "Use Default Folder" }!.performClick(nil)
         try SelfTest.check(settings.folder.path == CaptureSaveSettings.defaultFolder.path,"Use Default Folder restores Pictures/EVB Shot")
         try await renderWindow(preferences.window!,name:"default-save-settings",folder:folder)
-        print("PASS actual Save/Save & Copy Path buttons: stable toolbar while saving, close exactly once after success, stay open on failure, persistent folder, native edited pixels and clipboard preservation")
+        print("PASS distinct Save, Save & Copy and Save & Copy Path buttons: native edited PNG/file paste, stable toolbar, close on success, failed-save clipboard preservation")
         let outputSource = CGImageSourceCreateWithURL(exported as CFURL,nil)!
         let decoded = CGImageSourceCreateImageAtIndex(outputSource,0,nil)!
         try SelfTest.check(decoded.width == 550 && decoded.height == 370,"exported crop dimensions")
@@ -719,13 +730,22 @@ enum EditorTest {
         print("PASS 4096-pixel native viewport, Retina cache refinement, physical-pixel 100% zoom and pixel-aligned native canvas")
     }
     static func saveAndCheck(_ controller:ResultController,copy:Bool,expectSuccess:Bool = true) async throws -> URL? {
+        try await saveAndCheck(controller,mode:copy ? .filePath : .none,expectSuccess:expectSuccess)
+    }
+    static func checkCopiedFile(_ board:NSPasteboard,url:URL) throws {
+        let files = board.readObjects(forClasses:[NSURL.self],options:[.urlReadingFileURLsOnly:true]) as? [URL]
+        try SelfTest.check(files == [url],"native file paste resolves to the permanent saved capture")
+    }
+    static func saveAndCheck(_ controller:ResultController,mode:CaptureCopyMode,expectSuccess:Bool = true) async throws -> URL? {
         let window = controller.window!
         var closed = 0
         controller.onClose = { closed += 1 }
         window.contentView!.superview!.layoutSubtreeIfNeeded()
         let toolbar = window.toolbar!.items
         let buttons = toolbar.first { $0.itemIdentifier.rawValue == "save" }!.view!.subviews.compactMap { $0 as? NSButton }
-        let button = buttons.first { $0.title == (copy ? "Save & Copy Path" : "Save") }!
+        let title = mode == .none ? "Save" : mode == .filePath ? "Save & Copy Path" : "Save & Copy"
+        let button = buttons.first { $0.title == title }!
+        try SelfTest.check(!button.isHidden && button.isEnabled,"each save action is available outside crop/trim")
         let swatch = toolbar.first { $0.itemIdentifier.rawValue == "style" }?.view?.subviews.first { $0 is AnnotationColorButton }
         func pixels(_ view:NSView?) throws -> Data? {
             guard let view else { return nil }
@@ -738,7 +758,7 @@ enum EditorTest {
         try SelfTest.check(controller.isSaving && window.attachedSheet == nil,"save starts immediately without a dialog")
         let during = try pixels(swatch)
         await controller.saveTask?.value
-        print("SAVE REGRESSION copy=\(copy) success=\(expectSuccess) toolbar pixels stable=\(before == during) close callbacks=\(closed)")
+        print("SAVE REGRESSION action=\(title) success=\(expectSuccess) toolbar pixels stable=\(before == during) close callbacks=\(closed)")
         try SelfTest.check(before == during,"saving must not dim and restore the annotation toolbar")
         try SelfTest.check(closed == (expectSuccess ? 1 : 0),"successful save must close exactly once; failed save must leave the editor open")
         try SelfTest.check(!controller.isSaving,"save lifecycle completes")

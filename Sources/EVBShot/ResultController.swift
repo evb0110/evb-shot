@@ -14,6 +14,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
     private let audio = NSButton(checkboxWithTitle: "Include audio", target: nil, action: nil)
     private let audioPlay = NSButton(title:"Play",target:nil,action:nil)
     private let savePath = NSButton(title: "Save & Copy Path", target: nil, action: nil)
+    private let saveMedia = NSButton(title: "Save & Copy", target: nil, action: nil)
     private let save = NSButton(title: "Save", target: nil, action: nil)
     private let cropApply = NSButton(title: "Crop", target: nil, action: nil)
     private let cropCancel = NSButton(title: "Cancel", target: nil, action: nil)
@@ -104,6 +105,11 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
             if artifact.kind == .video {
                 view.controlsStyle = .floating; view.videoGravity = .resizeAspect
                 videoPlayerView = view
+                // AVKit can become trimmable after AVPlayerItem reaches ready.
+                // Observe the capability itself so the button cannot stay stale.
+                videoLoadObservation = view.observe(\.canBeginTrimming,options:[.initial,.new]) { [weak self] _,_ in
+                    Task { @MainActor in self?.updateControls() }
+                }
                 let container = NSView(); view.translatesAutoresizingMaskIntoConstraints = false; container.addSubview(view)
                 NSLayoutConstraint.activate([view.leadingAnchor.constraint(equalTo:container.leadingAnchor),view.trailingAnchor.constraint(equalTo:container.trailingAnchor),view.topAnchor.constraint(equalTo:container.topAnchor),view.bottomAnchor.constraint(equalTo:container.bottomAnchor)])
                 videoCropFrame.imageScaling = .scaleProportionallyUpOrDown; videoCropFrame.isHidden = true
@@ -152,7 +158,6 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
                     do {
                         videoDuration = try await item.asset.load(.duration).seconds
                         guard !Task.isCancelled else { return }
-                        videoLoadObservation = item.observe(\.status,options:[.new]) { [weak self] _,_ in Task { @MainActor in self?.updateControls() } }
                     } catch { status.stringValue = error.localizedDescription }
                 }
             } else {
@@ -249,11 +254,15 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
         if artifact.height > artifact.width * 3 { zoom.selectItem(at:1) }
         zoom.target = self; zoom.action = #selector(zoomChanged); zoom.controlSize = .small
         zoom.setAccessibilityLabel("Zoom")
-        savePath.target = self; savePath.action = #selector(saveAndCopy); savePath.bezelStyle = .rounded; savePath.bezelColor = .controlAccentColor
+        savePath.target = self; savePath.action = #selector(saveAndCopyPath); savePath.bezelStyle = .rounded
+        savePath.toolTip = "Save and copy the full file path in shell-safe single quotes"
+        saveMedia.target = self; saveMedia.action = #selector(saveAndCopyMedia); saveMedia.bezelStyle = .rounded; saveMedia.bezelColor = .controlAccentColor
+        saveMedia.toolTip = artifact.kind == .image ? "Save and copy the edited image for pasting" : "Save and copy the recording file for pasting"
+        saveMedia.setAccessibilityLabel("Save & Copy Media")
         save.target = self; save.action = #selector(saveOnly); save.bezelStyle = .rounded
         cropApply.target = self; cropApply.action = #selector(applyCrop); cropApply.bezelStyle = .rounded; cropApply.bezelColor = .controlAccentColor
         cropCancel.target = self; cropCancel.action = #selector(cancelCrop); cropCancel.bezelStyle = .rounded
-        actions = NSStackView(views:[save,savePath,cropCancel,cropApply]); actions.spacing = 8
+        actions = NSStackView(views:[save,savePath,saveMedia,cropCancel,cropApply]); actions.spacing = 8
         for (button,symbol,action) in [(trimVideo,"timeline.selection",#selector(beginVideoTrim)),(cropVideo,"crop",#selector(beginVideoCrop)),(resetVideo,"arrow.counterclockwise",#selector(resetVideoEdits))] {
             button.target = self; button.action = action; button.bezelStyle = .texturedRounded
             button.image = NSImage(systemSymbolName:symbol,accessibilityDescription:nil); button.imagePosition = .imageLeading
@@ -289,7 +298,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
             dimensions.stringValue = "\(Int(rect.width).formatted()) × \(Int(rect.height).formatted()) px"
             let cropping = canvas.tool == .crop
             toolButtons.forEach { $0.value.state = $0.key == canvas.tool ? .on : .off; $0.value.isEnabled = !busy }
-            save.isHidden = cropping; savePath.isHidden = cropping; cropApply.isHidden = !cropping; cropCancel.isHidden = !cropping
+            save.isHidden = cropping; savePath.isHidden = cropping; saveMedia.isHidden = cropping; cropApply.isHidden = !cropping; cropCancel.isHidden = !cropping
             cropApply.isEnabled = rect.width >= 2 && rect.height >= 2
             if let mark = canvas.selectedMark {
                 color.color = mark.color.nsColor; canvas.color = mark.color; canvas.thickness = mark.thickness; canvas.fontSize = mark.fontSize
@@ -311,7 +320,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
             let duration = (videoEdits.end ?? videoDuration)-videoEdits.start
             dimensions.stringValue = "\(Int(size.width).formatted()) × \(Int(size.height).formatted()) px · \(String(format:"%.2f",max(0,duration))) s"
             cropApply.isHidden = !videoCropping; cropCancel.isHidden = !videoCropping
-            save.isHidden = videoCropping; savePath.isHidden = videoCropping
+            save.isHidden = videoCropping; savePath.isHidden = videoCropping; saveMedia.isHidden = videoCropping
             cropApply.isEnabled = (rect?.width ?? 0) >= 2 && (rect?.height ?? 0) >= 2 && videoTask == nil
             cropCancel.isEnabled = videoTask == nil
             trimVideo.isEnabled = videoTask == nil && !videoCropping && !trimming && videoPlayerView?.canBeginTrimming == true
@@ -322,7 +331,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
             dimensions.stringValue = artifact.kind == .audio ? "Audio recording · AAC" : "\(artifact.width.formatted()) × \(artifact.height.formatted()) px"
             cropApply.isHidden = true; cropCancel.isHidden = true
         }
-        savePath.isEnabled = !busy && !trimming; save.isEnabled = savePath.isEnabled
+        savePath.isEnabled = !busy && !trimming; save.isEnabled = savePath.isEnabled; saveMedia.isEnabled = savePath.isEnabled
     }
     @objc private func toolClicked(_ sender:NSButton) {
         guard let id = sender.identifier?.rawValue, let tool = EditorTool(rawValue:id) else { return }
@@ -357,14 +366,16 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
         guard !busy, videoTask == nil, !videoCropping, let view = videoPlayerView, view.canBeginTrimming else { return }
         revealVideoFrame(); trimming = true; updateControls()
         view.beginTrimming { [weak self] result in
-            guard let self else { return }
-            if result == .okButton, let item = player?.currentItem {
-                videoEdits.start = item.reversePlaybackEndTime.isNumeric ? max(0,item.reversePlaybackEndTime.seconds) : 0
-                videoEdits.end = item.forwardPlaybackEndTime.isNumeric ? min(videoDuration,item.forwardPlaybackEndTime.seconds) : nil
-            }
             // AVKit restores toolbar states after invoking its completion handler.
             // Refresh on the next main-actor turn, after that cleanup has returned.
-            Task { @MainActor [weak self] in self?.trimming = false; self?.updateControls() }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if result == .okButton, let item = player?.currentItem {
+                    videoEdits.start = item.reversePlaybackEndTime.isNumeric ? max(0,item.reversePlaybackEndTime.seconds) : 0
+                    videoEdits.end = item.forwardPlaybackEndTime.isNumeric ? min(videoDuration,item.forwardPlaybackEndTime.seconds) : nil
+                }
+                trimming = false; updateControls()
+            }
         }
     }
     @objc private func beginVideoCrop() {
@@ -422,7 +433,8 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
         guard let player else { return }
         player.seek(to:player.currentTime(),toleranceBefore:.zero,toleranceAfter:.zero)
     }
-    @objc private func saveAndCopy() { saveCapture(copy:true) }
+    @objc private func saveAndCopyPath() { saveCapture(copy:.filePath) }
+    @objc private func saveAndCopyMedia() { saveCapture(copy:.media) }
     @objc private func togglePlayback() {
         guard let player else { return }
         if player.rate > 0 { player.pause(); return }
@@ -431,7 +443,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
             player.seek(to:CMTime(seconds:videoEdits.start,preferredTimescale:60000),toleranceBefore:.zero,toleranceAfter:.zero) { [weak player] finished in if finished { player?.play() } }
         } else { player.play() }
     }
-    @objc private func saveOnly() { saveCapture(copy:false) }
+    @objc private func saveOnly() { saveCapture(copy:.none) }
     @objc private func revealDraft() { NSWorkspace.shared.activateFileViewerSelecting([lastSavedURL ?? artifact.url]) }
     func windowShouldClose(_ sender:NSWindow) -> Bool {
         canvas?.commitText()
@@ -451,7 +463,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
         if let resizeObserver { NotificationCenter.default.removeObserver(resizeObserver) }
         onClose?()
     }
-    private func saveCapture(copy:Bool) {
+    private func saveCapture(copy:CaptureCopyMode) {
         guard !busy, !trimming, !videoCropping else { return }
         canvas?.commitText()
         guard let window else { return }
@@ -473,7 +485,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
                 else if artifact.kind == .video { source = try await VideoEditing.export(artifact.url,edits:videoEdits,includeAudio:includeAudio) }
                 else { source = try await MediaExport.normalized(artifact.url,includeAudio:includeAudio) }
                 defer { if artifact.kind != .image && source != artifact.url { try? FileManager.default.removeItem(at:source) } }
-                lastSavedURL = try await saveCaptureFile(from:source,toFolder:folder,kind:artifact.kind,copyFilePath:copy,pasteboard:pasteboard)
+                lastSavedURL = try await saveCaptureFile(from:source,toFolder:folder,kind:artifact.kind,copy:copy,pasteboard:pasteboard)
                 savedState = editDocument?.state; window.isDocumentEdited = false
                 succeeded = true
                 window.close()
