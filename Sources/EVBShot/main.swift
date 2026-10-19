@@ -73,8 +73,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
     private func updateActivationPolicy() {
         updates.activityChanged()
-        let hasWorkspace = !results.isEmpty || recording != nil || picker != nil || aboutWindow != nil || settings != nil
-        NSApp.setActivationPolicy(hasWorkspace ? .regular : .accessory)
+        // Capture controls must not add a Dock icon and move the content being
+        // selected or recorded. Editors and other persistent windows keep ⌘Tab.
+        let hasDockWorkspace = !results.isEmpty || aboutWindow != nil || settings != nil
+        let policy: NSApplication.ActivationPolicy = hasDockWorkspace ? .regular : .accessory
+        if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }
     }
     func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows:Bool) -> Bool {
         if let result = results.last { result.window?.deminiaturize(nil); result.showWindow(nil) }
