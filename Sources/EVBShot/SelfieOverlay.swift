@@ -26,6 +26,24 @@ final class CameraFrame: @unchecked Sendable {
     init(_ buffer:CVPixelBuffer) { self.buffer = buffer }
 }
 
+/// Keep one pending frame while AppKit is busy instead of retaining a video backlog.
+final class CameraPreviewDelivery: @unchecked Sendable {
+    private let lock = NSLock()
+    private var latest:CameraFrame?
+    private var scheduled = false
+    private let deliver:@MainActor @Sendable (CameraFrame)->Void
+    init(deliver:@escaping @MainActor @Sendable (CameraFrame)->Void) { self.deliver = deliver }
+    func submit(_ frame:CameraFrame) {
+        lock.lock(); latest = frame
+        let enqueue = !scheduled; scheduled = true; lock.unlock()
+        guard enqueue else { return }
+        DispatchQueue.main.async { [self] in
+            lock.lock(); let frame = latest; latest = nil; scheduled = false; lock.unlock()
+            if let frame { deliver(frame) }
+        }
+    }
+}
+
 @MainActor
 final class SelfieOverlay {
     private let presentation:RecordingOverlay.Presentation

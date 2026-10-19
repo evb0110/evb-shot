@@ -167,7 +167,8 @@ enum EditorTest {
         window.contentView!.layoutSubtreeIfNeeded()
         let warning = window.contentView!.subviews.compactMap { $0 as? NSTextField }.first { $0.identifier?.rawValue == "CaptureWarning" }
         try SelfTest.check(warning?.stringValue.lowercased().contains("microphone") == true && (warning?.frame.height ?? 0)>25,"missing microphone has a readable wrapping warning in compact review")
-        try await renderWindow(window,name:"microphone-warning",folder:folder)
+        try SelfTest.check(window.frame.height <= (artifact.kind == .audio ? 280 : 400),"warnings preserve compact media window limits")
+        try await renderWindow(window,name:artifact.kind == .audio ? "audio-input-warning" : "microphone-warning",folder:folder)
     }
     static func liveSelfieControls(folder:URL) async throws {
         let region = CGRect(x:-1400,y:200,width:960,height:540)
@@ -206,6 +207,16 @@ enum EditorTest {
         var buffer:CVPixelBuffer?
         CVPixelBufferCreate(nil,320,240,kCVPixelFormatType_32BGRA,[kCVPixelBufferIOSurfacePropertiesKey:[:]] as CFDictionary,&buffer)
         context.render(camera,to:buffer!); selfie.update(CameraFrame(buffer!))
+        var deliveries = 0, delivered:CameraFrame?
+        let newest = CameraFrame(buffer!)
+        await withCheckedContinuation { pending in
+            let delivery = CameraPreviewDelivery { frame in
+                deliveries += 1; delivered = frame; pending.resume()
+            }
+            for _ in 0..<100 { delivery.submit(CameraFrame(buffer!)) }
+            delivery.submit(newest)
+        }
+        try SelfTest.check(deliveries == 1 && delivered === newest,"a blocked UI receives only the newest camera frame, without a growing buffer queue")
         try await renderWindow(panel,name:"selfie-preview",folder:folder)
         selfie.setFrame(panel.frame.offsetBy(dx:-10000,dy:10000))
         let clamped = panel.frame.offsetBy(dx:30000,dy:30000)

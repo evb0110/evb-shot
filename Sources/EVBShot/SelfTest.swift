@@ -247,6 +247,9 @@ enum SelfTest {
         let audio = RecordingSession(); try audio.startFixture(width: 2, height: 2, options: audioOptions, folder: folder.appendingPathComponent("media-audio"))
         try await audio.feedFixture(mic, type: .microphone)
         let audioArtifact = try await audio.stop()
+        var warnedAudio = audioArtifact
+        warnedAudio.notice = "The microphone did not provide audio. The available computer audio has been preserved."
+        try await EditorTest.mediaWarning(warnedAudio,folder:folder)
         try CaptureFiles.atomicCopy(from: audioArtifact.url, to: folder.appendingPathComponent("audio-only.m4a"))
         audioOptions.systemAudio = true
         let mixedAudio = RecordingSession()

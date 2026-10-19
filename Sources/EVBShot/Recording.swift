@@ -71,8 +71,8 @@ final class RecordingSession: NSObject, SCStreamOutput, SCStreamDelegate, @unche
         if let device = options.camera, !options.audioOnly {
             let camera = CameraCapture(); self.camera = camera
             camera.onFailure = { [weak self] error in self?.queue.async { self?.fail(error) } }
-            let callback = onCameraFrame
-            camera.onFrame = { frame in DispatchQueue.main.async { callback?(frame) } }
+            let delivery = onCameraFrame.map { CameraPreviewDelivery(deliver:$0) }
+            camera.onFrame = { frame in delivery?.submit(frame) }
             do { try await camera.start(device: device) } catch { await camera.stop(); self.camera = nil; throw error }
         }
         do {

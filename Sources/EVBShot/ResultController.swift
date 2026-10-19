@@ -43,7 +43,11 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
         self.artifact = artifact
         self.saveSettings = saveSettings; self.pasteboard = pasteboard
         let compact = artifact.kind != .image
-        let initialSize = NSSize(width:compact ? 420 : 820,height:artifact.kind == .audio ? 150 : compact ? 270 : 580)
+        let baseHeight:CGFloat = artifact.kind == .audio ? 150 : compact ? 270 : 580
+        let noticeHeight:CGFloat = compact ? artifact.notice.map {
+            min(64,ceil(($0 as NSString).boundingRect(with:CGSize(width:392,height:10000),options:[.usesLineFragmentOrigin,.usesFontLeading],attributes:[.font:NSFont.systemFont(ofSize:11)]).height)+12)
+        } ?? 0 : 0
+        let initialSize = NSSize(width:compact ? 420 : 820,height:baseHeight+noticeHeight)
         let style:NSWindow.StyleMask = compact ? [.titled,.closable,.miniaturizable] : [.titled,.closable,.resizable,.miniaturizable]
         let window = EditorWindow(contentRect:CGRect(origin:.zero,size:initialSize), styleMask:style, backing:.buffered, defer:false)
         window.title = "EVB Shot"; window.titleVisibility = .hidden; window.toolbarStyle = .unifiedCompact
@@ -154,6 +158,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
             let warning = NSTextField(wrappingLabelWithString:notice)
             warning.identifier = NSUserInterfaceItemIdentifier("CaptureWarning")
             warning.font = .systemFont(ofSize:11); warning.textColor = .systemOrange
+            warning.maximumNumberOfLines = compact ? 4 : 8; warning.toolTip = notice
             warning.translatesAutoresizingMaskIntoConstraints = false; warning.preferredMaxLayoutWidth = compact ? 392 : 740
             content.addSubview(warning)
             NSLayoutConstraint.activate([
