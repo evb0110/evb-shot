@@ -15,7 +15,7 @@ let package = Package(
                 linkerSettings: [.unsafeFlags(["\(pngPrefix)/lib/libpng16.a"]), .linkedLibrary("z")]),
         .executableTarget(name: "EVBShot", dependencies: ["PixelCore", .product(name: "Sparkle", package: "Sparkle")],
             linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("ScreenCaptureKit"),
-                             .linkedFramework("AVFoundation"), .linkedFramework("CoreImage"),
+                             .linkedFramework("AVFoundation"), .linkedFramework("CoreImage"), .linkedFramework("CoreAudio"),
                              .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])])
     ],
     swiftLanguageModes: [.v5]

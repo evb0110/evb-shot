@@ -156,8 +156,76 @@ enum EditorTest {
         try await render(controller,name:"editor",folder:folder)
         controller.close()
     }
+    static func mediaWarning(_ artifact:CaptureArtifact,folder:URL) async throws {
+        let suite = "com.evb.shot.warning-test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName:suite)!
+        defer { defaults.removePersistentDomain(forName:suite) }
+        let board = NSPasteboard(name:NSPasteboard.Name(suite)); defer { board.releaseGlobally() }
+        let controller = ResultController(artifact,saveSettings:CaptureSaveSettings(defaults:defaults),pasteboard:board,mutePlayback:true)
+        defer { controller.close() }
+        let window = controller.window!; window.setFrameOrigin(CGPoint(x:-20000,y:-20000)); controller.showWindow(nil)
+        window.contentView!.layoutSubtreeIfNeeded()
+        let warning = window.contentView!.subviews.compactMap { $0 as? NSTextField }.first { $0.identifier?.rawValue == "CaptureWarning" }
+        try SelfTest.check(warning?.stringValue.lowercased().contains("microphone") == true && (warning?.frame.height ?? 0)>25,"missing microphone has a readable wrapping warning in compact review")
+        try await renderWindow(window,name:"microphone-warning",folder:folder)
+    }
+    static func liveSelfieControls(folder:URL) async throws {
+        let region = CGRect(x:-1400,y:200,width:960,height:540)
+        let selfie = SelfieOverlay(presentation:.offscreen)
+        var changed:SelfiePlacement?
+        selfie.onChange = { changed = $0 }
+        selfie.show(region:region,placement:.initial(size:CGSize(width:1920,height:1080),corner:.bottomRight))
+        defer { selfie.hide() }
+        let panel = selfie.panel!, view = panel.contentView!
+        try SelfTest.check(view.acceptsFirstMouse(for:nil),"selfie drag/resize accepts the first click while another app is active")
+        try SelfTest.check(panel.isVisible && !panel.hidesOnDeactivate && panel.frame.maxX < -10000,"camera has a persistent visible native preview; tests stay offscreen")
+        func mouse(_ type:NSEvent.EventType,_ point:CGPoint) -> NSEvent {
+            NSEvent.mouseEvent(with:type,location:panel.convertPoint(fromScreen:point),modifierFlags:[],timestamp:0,
+                windowNumber:panel.windowNumber,context:nil,eventNumber:0,clickCount:1,pressure:1)!
+        }
+        let original = panel.frame, start = CGPoint(x:original.midX,y:original.midY)
+        view.mouseDown(with:mouse(.leftMouseDown,start))
+        let moved = CGPoint(x:start.x-180,y:start.y+110)
+        view.mouseDragged(with:mouse(.leftMouseDragged,moved)); view.mouseUp(with:mouse(.leftMouseUp,moved))
+        try SelfTest.check(panel.frame.minX < original.minX-150 && panel.frame.minY > original.minY+90 && changed != nil,"dragging the actual selfie view moves its window and updates encoded placement")
+        let beforeResize = panel.frame, handle = CGPoint(x:beforeResize.maxX-8,y:beforeResize.minY+8)
+        view.mouseDown(with:mouse(.leftMouseDown,handle))
+        let smaller = CGPoint(x:handle.x-60,y:handle.y+45)
+        view.mouseDragged(with:mouse(.leftMouseDragged,smaller)); view.mouseUp(with:mouse(.leftMouseUp,smaller))
+        try SelfTest.check(panel.frame.width < beforeResize.width-50 && abs(panel.frame.height/panel.frame.width-0.75)<0.001,"native resize handle shrinks the camera and preserves its aspect ratio")
+        let placement = changed!, encoded = placement.rect(in:CGSize(width:1920,height:1080))
+        let displayed = panel.frame.offsetBy(dx:30000-region.minX,dy:30000-region.minY)
+        try SelfTest.check(abs(encoded.minX-displayed.minX*2)<0.001 && abs(encoded.minY-displayed.minY*2)<0.001 && abs(encoded.width-displayed.width*2)<0.001,"preview and encoded selfie match on a negative-origin Retina display")
+        let screen = CIImage(color:CIColor(red:0,green:0,blue:0)).cropped(to:CGRect(x:0,y:0,width:1920,height:1080))
+        let camera = CIImage(color:CIColor(red:1,green:0.5,blue:0)).cropped(to:CGRect(x:0,y:0,width:320,height:240))
+        let composite = SelfieCompositor.image(screen:screen,camera:camera,size:CGSize(width:1920,height:1080),placement:placement)
+        let context = CIContext()
+        let frame = try PixelFrame(image:context.createCGImage(composite,from:composite.extent)!)
+        let x = Int(encoded.midX), y = 1080-Int(encoded.midY)-1, offset = (y*1920+x)*4
+        try SelfTest.check(frame.rgba[offset] > 240 && frame.rgba[offset+1] > 100,"moved and resized placement composites camera pixels at the expected encoded location")
+        var buffer:CVPixelBuffer?
+        CVPixelBufferCreate(nil,320,240,kCVPixelFormatType_32BGRA,[kCVPixelBufferIOSurfacePropertiesKey:[:]] as CFDictionary,&buffer)
+        context.render(camera,to:buffer!); selfie.update(CameraFrame(buffer!))
+        try await renderWindow(panel,name:"selfie-preview",folder:folder)
+        selfie.setFrame(panel.frame.offsetBy(dx:-10000,dy:10000))
+        let clamped = panel.frame.offsetBy(dx:30000,dy:30000)
+        try SelfTest.check(region.contains(clamped),"moving camera past a capture edge keeps the whole image inside the recording")
+        let overlay = RecordingOverlay(presentation:.offscreen)
+        overlay.show(region:region,microphone:MicrophoneDevice(uid:"fixture-system",name:"System USB microphone"))
+        defer { overlay.hide() }
+        overlay.didStart(); overlay.updateMicrophoneLevel(0.8)
+        let row = overlay.controls!.contentView!.subviews.first as! NSStackView
+        try SelfTest.check(row.arrangedSubviews.compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("System USB microphone") },"recording bar identifies the selected system microphone")
+        try SelfTest.check(abs((row.arrangedSubviews.compactMap { $0 as? NSLevelIndicator }.first?.doubleValue ?? 0)-0.8)<0.001,"recording bar exposes incoming microphone level")
+        try await renderWindow(overlay.controls!,name:"microphone-recording-controls",folder:folder)
+        let tone = try SelfTest.audioSample(index:0,frequency:880)
+        try SelfTest.check(RecordingSession.microphoneLevel(tone) > 0.7,"actual PCM microphone samples drive the meter")
+        selfie.hide(); try SelfTest.check(selfie.panel == nil && !panel.isVisible,"Stop removes the selfie preview")
+        print("PASS live selfie preview native drag/resize, Retina/negative-origin placement parity, edge clamping, compositor pixels and system microphone meter")
+    }
     static func run(folder: URL) async throws {
         try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
+        try await liveSelfieControls(folder:folder)
         try await recordingPermissionRegression(folder:folder)
         try statusIcon(folder:folder)
         try recordingCurtain(folder:folder)

@@ -8,13 +8,10 @@ enum CameraCorner: String, CaseIterable {
 
 struct SelfieCompositor {
     static func image(screen: CIImage, camera: CIImage, size: CGSize, corner: CameraCorner) -> CIImage {
-        let width = max(64, min(480, size.width * 0.22))
-        let height = width * 0.75
-        let margin = max(12, size.width * 0.012)
-        let left = corner == .bottomLeft || corner == .topLeft
-        let top = corner == .topLeft || corner == .topRight
-        let rect = CGRect(x: left ? margin : size.width - width - margin,
-                          y: top ? size.height - height - margin : margin, width: width, height: height)
+        image(screen:screen,camera:camera,size:size,placement:.initial(size:size,corner:corner))
+    }
+    static func image(screen:CIImage,camera:CIImage,size:CGSize,placement:SelfiePlacement) -> CIImage {
+        let rect = placement.rect(in:size), width = rect.width, height = rect.height
         let extent = camera.extent
         let mirrored = camera.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
             .transformed(by: CGAffineTransform(scaleX: -1, y: 1))
@@ -42,6 +39,7 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var firstFrame: CheckedContinuation<Void, Error>?
     private var observer: NSObjectProtocol?
     var onFailure: ((Error) -> Void)?
+    var onFrame: ((CameraFrame) -> Void)?
 
     func start(device: AVCaptureDevice) async throws {
         let deviceID = device.uniqueID
@@ -86,6 +84,7 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let image = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         lock.lock(); latest = image; lock.unlock()
+        onFrame?(CameraFrame(image))
         let pending = firstFrame; firstFrame = nil; pending?.resume()
     }
     func frame() -> CVPixelBuffer? { lock.lock(); defer { lock.unlock() }; return latest }

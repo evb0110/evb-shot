@@ -16,14 +16,18 @@ final class RecordingOverlay {
     private let elapsed = NSTextField(labelWithString: "00:00")
     private var stopButton: NSButton?
     var onStop: (() -> Void)?
+    var onRegionChange: ((CGRect)->Void)?
+    private let audioStatus = NSTextField(labelWithString:"Microphone off")
+    private let microphoneMeter = NSLevelIndicator()
+    private var microphoneName:String?
 
     init(presentation: Presentation = .desktop) { self.presentation = presentation }
 
-    func show(region: CGRect, windowID: CGWindowID? = nil) {
+    func show(region: CGRect, windowID: CGWindowID? = nil, microphone:MicrophoneDevice? = nil, systemAudio:Bool = false) {
         hide()
         self.region = region; self.windowID = windowID
         rebuildCurtains()
-        let panel = NSPanel(contentRect: CGRect(x: 0, y: 0, width: 184, height: 44),
+        let panel = NSPanel(contentRect: CGRect(x: 0, y: 0, width: 380, height: 44),
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         configure(panel, identifier: "RecordingStopControls")
         panel.hasShadow = true; panel.isMovableByWindowBackground = true
@@ -37,11 +41,19 @@ final class RecordingOverlay {
         let stop = NSButton(title: "Stop", image: NSImage(systemSymbolName: "stop.fill", accessibilityDescription: nil)!, target: self, action: #selector(stopRecording))
         stop.bezelStyle = .rounded; stop.setAccessibilityLabel("Stop recording")
         stop.isEnabled = false; stopButton = stop
-        let row = NSStackView(views: [dot, elapsed, stop]); row.spacing = 10
+        microphoneName = microphone?.name
+        audioStatus.font = .systemFont(ofSize:10); audioStatus.lineBreakMode = .byTruncatingMiddle
+        audioStatus.stringValue = microphone.map { "Mic: \($0.name) · waiting…" } ?? (systemAudio ? "Computer audio · microphone off" : "Audio off")
+        audioStatus.setAccessibilityIdentifier("RecordingAudioStatus")
+        microphoneMeter.levelIndicatorStyle = .continuousCapacity; microphoneMeter.minValue = 0; microphoneMeter.maxValue = 1
+        microphoneMeter.doubleValue = 0; microphoneMeter.isHidden = microphone == nil
+        microphoneMeter.setAccessibilityLabel("Microphone input level")
+        let row = NSStackView(views: [dot, elapsed, audioStatus, microphoneMeter, stop]); row.spacing = 8
         row.translatesAutoresizingMaskIntoConstraints = false; material.addSubview(row)
         NSLayoutConstraint.activate([
             row.centerXAnchor.constraint(equalTo: material.centerXAnchor), row.centerYAnchor.constraint(equalTo: material.centerYAnchor),
-            dot.widthAnchor.constraint(equalToConstant: 14), dot.heightAnchor.constraint(equalToConstant: 14)
+            dot.widthAnchor.constraint(equalToConstant: 14), dot.heightAnchor.constraint(equalToConstant: 14),
+            audioStatus.widthAnchor.constraint(equalToConstant:150),microphoneMeter.widthAnchor.constraint(equalToConstant:36)
         ])
         panel.contentView = material; controls = panel; placeControls(); panel.orderFrontRegardless()
         screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
@@ -89,6 +101,15 @@ final class RecordingOverlay {
     }
     func updateElapsed(_ text: String) { elapsed.stringValue = text }
     func didStart() { elapsed.stringValue = "00:00"; stopButton?.isEnabled = true }
+    func updateMicrophone(_ device:MicrophoneDevice?) {
+        microphoneName = device?.name
+        audioStatus.stringValue = device.map { "Mic: \($0.name) · waiting…" } ?? "System microphone unavailable"
+        microphoneMeter.doubleValue = 0
+    }
+    func updateMicrophoneLevel(_ level:Float) {
+        guard let microphoneName else { return }
+        audioStatus.stringValue = "Mic: \(microphoneName)"; microphoneMeter.doubleValue = Double(level)
+    }
     private func refreshWindowBounds() {
         guard let windowID, let records = CGWindowListCopyWindowInfo(.optionIncludingWindow, windowID) as? [[String: Any]],
               let bounds = records.first?[kCGWindowBounds as String] as? [String: Any],
@@ -99,6 +120,7 @@ final class RecordingOverlay {
             (panel.contentView as? RecordingCurtainView)?.region = region.offsetBy(dx: -screen.frame.minX, dy: -screen.frame.minY)
         }
         placeControls()
+        onRegionChange?(region)
     }
     @objc private func stopRecording() { onStop?() }
     func hide() {

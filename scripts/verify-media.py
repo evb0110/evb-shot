@@ -54,4 +54,9 @@ for name in ['audio-only.m4a', 'audio-only-mixed.m4a']:
 static = probe('static-desktop.mov')
 assert float(static['format']['duration']) > .65
 assert int(static['streams'][0]['nb_frames']) >= 18
+mono = probe('mono-system-microphone.mov')
+assert len([s for s in mono['streams'] if s['codec_type'] == 'audio']) == 1
+mono_pcm = array.array('f', subprocess.check_output(['ffmpeg', '-v', 'error', '-i', str(folder / 'mono-system-microphone.mov'), '-map', '0:a:0', '-ac', '1', '-ar', '48000', '-f', 'f32le', '-']))
+assert len(mono_pcm) > 48000 and max(abs(v) for v in mono_pcm) > .15, 'Mono system microphone lost its recorded audio'
+print('PASS mono system microphone retains an audible audio track through encoding')
 print('PASS native dimensions/FPS, 60 encoded frames, one mixed audio track, silent video with identical compressed video, audio-only outputs, static desktop clock')

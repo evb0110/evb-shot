@@ -187,27 +187,42 @@ enum SelfTest {
         CFDictionarySetValue(dict, Unmanaged.passUnretained(SCStreamFrameInfo.status.rawValue as CFString).toOpaque(), Unmanaged.passUnretained(NSNumber(value: SCFrameStatus.complete.rawValue)).toOpaque())
         return sample
     }
-    static func audioSample(index: Int, frequency: Double) throws -> CMSampleBuffer {
+    static func audioSample(index: Int, frequency: Double, channels:Int = 2) throws -> CMSampleBuffer {
         let count = 1600
-        var samples = [Float](repeating: 0, count: count * 2)
+        var samples = [Float](repeating: 0, count: count * channels)
         for frame in 0..<count { let value = Float(sin(Double(index * count + frame) * frequency * 2 * .pi / 48000) * 0.2)
-            samples[frame * 2] = value; samples[frame * 2 + 1] = value
+            for channel in 0..<channels { samples[frame * channels+channel] = value }
         }
         var block: CMBlockBuffer?
         CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: samples.count * 4, blockAllocator: nil, customBlockSource: nil, offsetToData: 0, dataLength: samples.count * 4, flags: 0, blockBufferOut: &block)
         guard let block else { throw ShotError("Fixture audio block failed") }
         _ = samples.withUnsafeBytes { CMBlockBufferReplaceDataBytes(with: $0.baseAddress!, blockBuffer: block, offsetIntoDestination: 0, dataLength: $0.count) }
         var asbd = AudioStreamBasicDescription(mSampleRate: 48000, mFormatID: kAudioFormatLinearPCM,
-            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked, mBytesPerPacket: 8, mFramesPerPacket: 1,
-            mBytesPerFrame: 8, mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked, mBytesPerPacket: UInt32(channels*4), mFramesPerPacket: 1,
+            mBytesPerFrame: UInt32(channels*4), mChannelsPerFrame: UInt32(channels), mBitsPerChannel: 32, mReserved: 0)
         var format: CMAudioFormatDescription?
         CMAudioFormatDescriptionCreate(allocator: nil, asbd: &asbd, layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &format)
         var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 48000), presentationTimeStamp: CMTime(value: Int64(index * count), timescale: 48000), decodeTimeStamp: .invalid)
-        var sample: CMSampleBuffer?; var bytesPerSample = 8
+        var sample: CMSampleBuffer?; var bytesPerSample = channels*4
         CMSampleBufferCreateReady(allocator: nil, dataBuffer: block, formatDescription: format, sampleCount: count, sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleSizeEntryCount: 1, sampleSizeArray: &bytesPerSample, sampleBufferOut: &sample)
         guard let sample else { throw ShotError("Fixture audio sample failed") }; return sample
     }
     static func media(folder: URL) async throws {
+        var missingOptions = RecordingOptions(); missingOptions.microphone = true
+        let missingMic = RecordingSession()
+        try missingMic.startFixture(width:160,height:90,options:missingOptions,folder:folder.appendingPathComponent("missing-microphone"))
+        try await missingMic.feedFixture((0..<5).map { try videoSample(index:$0,width:160,height:90) },type:.screen)
+        let missingArtifact = try await missingMic.stop()
+        try check(!missingArtifact.hasAudio && missingArtifact.notice?.lowercased().contains("microphone") == true,"requested microphone without samples must warn instead of silently reporting success")
+        try await EditorTest.mediaWarning(missingArtifact,folder:folder)
+        let monoMic = RecordingSession()
+        try monoMic.startFixture(width:160,height:90,options:missingOptions,folder:folder.appendingPathComponent("mono-microphone"))
+        async let monoVideo:Void = monoMic.feedFixture((0..<60).map { try videoSample(index:$0,width:160,height:90) },type:.screen)
+        async let monoAudio:Void = monoMic.feedFixture((0..<60).map { try audioSample(index:$0,frequency:660,channels:1) },type:.microphone)
+        _ = try await (monoVideo,monoAudio)
+        let monoArtifact = try await monoMic.stop()
+        try check(monoArtifact.hasAudio && monoArtifact.notice == nil,"mono system microphones retain audio through the real writer path")
+        try CaptureFiles.atomicCopy(from:monoArtifact.url,to:folder.appendingPathComponent("mono-system-microphone.mov"))
         var options = RecordingOptions(); options.systemAudio = true; options.microphone = true
         let recording = RecordingSession(); try recording.startFixture(width: 640, height: 360, options: options, folder: folder.appendingPathComponent("media-mixed"))
         let video = try (0..<60).map { try videoSample(index: $0, width: 640, height: 360) }

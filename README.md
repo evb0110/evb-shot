@@ -20,6 +20,8 @@ macOS may ask for screen capture access. Microphone/camera permission is request
 
 The app appears in the Dock and ⌘Tab while an editor, recording setup, window picker, Settings, or About window is open. Closing those windows returns it to the menu bar. Reopened editable drafts can undo/redo each restored annotation and their crop. The menu has capture/recording icons, and About uses the native macOS panel with version, author, source, and library credits. The app icon source is `Resources/AppIcon.svg`; the bundled ICNS contains all macOS sizes with transparent corners.
 
+During recording, the live selfie preview can be dragged within the capture and resized from its lower-right handle. Its position and size are applied to the saved video. The microphone follows the current macOS input device, including changes during capture; the recording bar shows its name and incoming level. A microphone that delivers no samples produces a visible warning instead of an unexplained silent result.
+
 If camera or microphone access is denied, setup and the selected-area frame stay visible. Use **Open Camera Settings…** or **Open Microphone Settings…** to grant access, or explicitly record without the blocked input. Audio-only recording must retain at least one audio source. The controls hide only after the selected inputs pass permission checks.
 
 ## Full-resolution scrolling

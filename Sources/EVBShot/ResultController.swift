@@ -149,9 +149,23 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
         content.addSubview(main); content.addSubview(footer)
         let available = NSScreen.underPointer.visibleFrame.insetBy(dx:16,dy:16)
         let maximum = window.contentRect(forFrameRect:available).size
+        var mediaBottom = footer.topAnchor
+        if let notice = artifact.notice {
+            let warning = NSTextField(wrappingLabelWithString:notice)
+            warning.identifier = NSUserInterfaceItemIdentifier("CaptureWarning")
+            warning.font = .systemFont(ofSize:11); warning.textColor = .systemOrange
+            warning.translatesAutoresizingMaskIntoConstraints = false; warning.preferredMaxLayoutWidth = compact ? 392 : 740
+            content.addSubview(warning)
+            NSLayoutConstraint.activate([
+                warning.leadingAnchor.constraint(equalTo:content.leadingAnchor,constant:14),
+                warning.trailingAnchor.constraint(equalTo:content.trailingAnchor,constant:-14),
+                warning.bottomAnchor.constraint(equalTo:footer.topAnchor,constant:-8)
+            ])
+            mediaBottom = warning.topAnchor
+        }
         NSLayoutConstraint.activate([
             main.leadingAnchor.constraint(equalTo:content.leadingAnchor), main.trailingAnchor.constraint(equalTo:content.trailingAnchor),
-            main.topAnchor.constraint(equalTo:content.topAnchor), main.bottomAnchor.constraint(equalTo:footer.topAnchor),
+            main.topAnchor.constraint(equalTo:content.topAnchor), main.bottomAnchor.constraint(equalTo:mediaBottom),
             footer.leadingAnchor.constraint(equalTo:content.leadingAnchor), footer.trailingAnchor.constraint(equalTo:content.trailingAnchor),
             footer.bottomAnchor.constraint(equalTo:content.bottomAnchor), footer.heightAnchor.constraint(equalToConstant:34),
             content.widthAnchor.constraint(greaterThanOrEqualToConstant:min(compact ? initialSize.width : 700,maximum.width)),
@@ -168,7 +182,6 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
         }
         scroll.contentView.postsFrameChangedNotifications = true
         content.layoutSubtreeIfNeeded(); canvas?.relayout(); updateControls()
-        if let notice = artifact.notice { status.stringValue = notice }
     }
     required init?(coder:NSCoder) { fatalError("init(coder:) is not supported") }
     private func setupControls() {
