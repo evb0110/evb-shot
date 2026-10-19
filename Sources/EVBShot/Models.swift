@@ -15,6 +15,7 @@ enum CaptureSource {
 }
 
 enum MediaKind { case image, video, audio }
+enum CaptureCopyMode { case none, filePath, media }
 
 struct CaptureArtifact {
     let url: URL
@@ -127,15 +128,42 @@ func copyPath(_ url: URL, pasteboard: NSPasteboard = .general) throws {
 }
 
 @MainActor
+func copySavedCapture(_ url: URL, kind: MediaKind, mode: CaptureCopyMode, pasteboard: NSPasteboard = .general) async throws {
+    switch mode {
+    case .none: return
+    case .filePath: try copyPath(url, pasteboard: pasteboard)
+    case .media:
+        let object: NSPasteboardWriting
+        if kind == .image {
+            // Offer the saved, full-resolution edited PNG as image data and as
+            // a file attachment. Never use the scaled editor preview.
+            let data = try await Task.detached { try Data(contentsOf: url) }.value
+            let item = NSPasteboardItem()
+            item.setData(data, forType: .png)
+            item.setString(url.absoluteString, forType: .fileURL)
+            object = item
+        } else {
+            // Copy the permanent saved file, like Finder. Large recordings do
+            // not need to be loaded into memory or depend on a temporary export.
+            object = url as NSURL
+        }
+        pasteboard.clearContents()
+        guard pasteboard.writeObjects([object]) else {
+            throw ShotError("The file was saved, but its media could not be copied. Saved file: \(url.path)")
+        }
+    }
+}
+
+@MainActor
 func saveCaptureFile(from source: URL, to destination: URL, copyFilePath: Bool, pasteboard: NSPasteboard = .general) async throws {
     try await Task.detached { try CaptureFiles.atomicCopy(from: source, to: destination) }.value
     if copyFilePath { try copyPath(destination, pasteboard: pasteboard) }
 }
 
 @MainActor
-func saveCaptureFile(from source: URL, toFolder folder: URL, kind: MediaKind, copyFilePath: Bool, pasteboard: NSPasteboard = .general) async throws -> URL {
+func saveCaptureFile(from source: URL, toFolder folder: URL, kind: MediaKind, copy: CaptureCopyMode, pasteboard: NSPasteboard = .general) async throws -> URL {
     let name = CaptureFiles.suggestedName(kind)
     let destination = try await Task.detached { try CaptureFiles.copyToFolder(from: source, folder: folder, name: name) }.value
-    if copyFilePath { try copyPath(destination, pasteboard: pasteboard) }
+    try await copySavedCapture(destination, kind: kind, mode: copy, pasteboard: pasteboard)
     return destination
 }

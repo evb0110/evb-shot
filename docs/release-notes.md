@@ -1,9 +1,8 @@
-Video editing, live selfie controls and system microphone capture for **EVB Shot 0.1.7**.
+Separate save and clipboard actions for **EVB Shot 0.1.8**.
 
-- See the selfie camera during recording. Drag it away from important screen content and resize it using the lower-right handle. The saved video uses the same placement and size.
-- Review recordings in a larger, resizable window that fits within one display. Trim the start and end with native macOS controls, or crop the frame using adjustable corner handles. Preview the edited frame before saving.
-- Trim-only exports retain the compressed video; spatial crops render at the selected pixel dimensions and preserve the recording frame rate and optional audio.
-- Microphone capture uses the current macOS system input, including external USB microphones, and follows system input changes during recording.
-- Recording setup identifies the system input. The floating recording bar shows its name and a live input meter, or clearly indicates that audio is off.
-- Missing microphone samples produce a readable warning while preserving the available video.
-- Camera and microphone remain off by default. Existing save behavior, full-resolution capture, signed updates and the notarized DMG are retained.
+- **Save** immediately writes to the configured folder and leaves the clipboard alone.
+- **Save & Copy** saves and copies the full-resolution edited image, or the saved video/audio file for pasting as media.
+- **Save & Copy Path** saves and copies the full path wrapped in shell-safe single quotes.
+- All three actions close the editor after success. Failed saves keep the editor and clipboard intact.
+- Media copy uses the saved output, including annotations, trimming, frame crop and the Include audio choice. Recording files are copied through native macOS file clipboard formats without loading large recordings into memory.
+- The Trim action follows AVKit readiness so it becomes available as soon as the recording supports trimming.
