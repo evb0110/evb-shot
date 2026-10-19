@@ -1,8 +1,6 @@
-Separate save and clipboard actions for **EVB Shot 0.1.8**.
+Stable Dock layout during capture for **EVB Shot 0.1.9**.
 
-- **Save** immediately writes to the configured folder and leaves the clipboard alone.
-- **Save & Copy** saves and copies the full-resolution edited image, or the saved video/audio file for pasting as media.
-- **Save & Copy Path** saves and copies the full path wrapped in shell-safe single quotes.
-- All three actions close the editor after success. Failed saves keep the editor and clipboard intact.
-- Media copy uses the saved output, including annotations, trimming, frame crop and the Include audio choice. Recording files are copied through native macOS file clipboard formats without loading large recordings into memory.
-- The Trim action follows AVKit readiness so it becomes available as soon as the recording supports trimming.
+- Screenshot selection, window picking, recording setup, and recording stay menu-bar-only. Starting capture no longer inserts a Dock icon or moves the screen layout.
+- Image editing and video/audio review still appear in the Dock and ⌘Tab, so windows remain accessible when switching apps.
+- Settings and About retain their normal Dock behavior. An already-open editor keeps its Dock access when another capture starts.
+- Existing capture, editing, recording, save, and media/path clipboard actions are retained.
