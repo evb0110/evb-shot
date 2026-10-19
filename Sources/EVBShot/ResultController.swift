@@ -28,6 +28,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
     private var player: AVPlayer?
     private(set) var videoPlayerView:AVPlayerView?
     private(set) var videoCropView:VideoCropView?
+    private let videoCropFrame = NSImageView()
     private(set) var videoEdits = VideoEdits()
     private(set) var videoTask:Task<Void,Never>?
     private var videoDuration:Double = 0
@@ -105,6 +106,10 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
                 videoPlayerView = view
                 let container = NSView(); view.translatesAutoresizingMaskIntoConstraints = false; container.addSubview(view)
                 NSLayoutConstraint.activate([view.leadingAnchor.constraint(equalTo:container.leadingAnchor),view.trailingAnchor.constraint(equalTo:container.trailingAnchor),view.topAnchor.constraint(equalTo:container.topAnchor),view.bottomAnchor.constraint(equalTo:container.bottomAnchor)])
+                videoCropFrame.imageScaling = .scaleProportionallyUpOrDown; videoCropFrame.isHidden = true
+                videoCropFrame.wantsLayer = true; videoCropFrame.layer?.backgroundColor = NSColor.black.cgColor
+                videoCropFrame.translatesAutoresizingMaskIntoConstraints = false; container.addSubview(videoCropFrame)
+                NSLayoutConstraint.activate([videoCropFrame.leadingAnchor.constraint(equalTo:container.leadingAnchor),videoCropFrame.trailingAnchor.constraint(equalTo:container.trailingAnchor),videoCropFrame.topAnchor.constraint(equalTo:container.topAnchor),videoCropFrame.bottomAnchor.constraint(equalTo:container.bottomAnchor)])
                 let crop = VideoCropView(); crop.sourceSize = CGSize(width:artifact.width,height:artifact.height)
                 crop.isHidden = true; crop.translatesAutoresizingMaskIntoConstraints = false; container.addSubview(crop); videoCropView = crop
                 NSLayoutConstraint.activate([crop.leadingAnchor.constraint(equalTo:container.leadingAnchor),crop.trailingAnchor.constraint(equalTo:container.trailingAnchor),crop.topAnchor.constraint(equalTo:container.topAnchor),crop.bottomAnchor.constraint(equalTo:container.bottomAnchor)])
@@ -308,6 +313,7 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
             cropApply.isHidden = !videoCropping; cropCancel.isHidden = !videoCropping
             save.isHidden = videoCropping; savePath.isHidden = videoCropping
             cropApply.isEnabled = (rect?.width ?? 0) >= 2 && (rect?.height ?? 0) >= 2 && videoTask == nil
+            cropCancel.isEnabled = videoTask == nil
             trimVideo.isEnabled = videoTask == nil && !videoCropping && !trimming && videoPlayerView?.canBeginTrimming == true
             cropVideo.isEnabled = videoTask == nil && !trimming && !videoCropping && videoDuration > 0
             resetVideo.isEnabled = videoTask == nil && !trimming && videoEdits != VideoEdits()
@@ -333,13 +339,14 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
     @objc private func deleteMark() { canvas?.deleteSelection() }
     @objc private func applyCrop() {
         if videoCropping, let crop = videoCropView {
+            guard videoTask == nil else { return }
             videoEdits.crop = VideoEdits.pixelCrop(crop.selection,in:crop.sourceSize)
             if videoEdits.crop == CGRect(origin:.zero,size:crop.sourceSize) { videoEdits.crop = nil }
             finishVideoCrop()
         } else { canvas?.applyCrop(); updateControls() }
     }
     @objc private func cancelCrop() {
-        if videoCropping { finishVideoCrop() }
+        if videoCropping { guard videoTask == nil else { return }; finishVideoCrop() }
         else { canvas?.setTool(.select); updateControls() }
     }
     private func revealVideoFrame() {
@@ -363,20 +370,39 @@ final class ResultController: NSWindowController, NSWindowDelegate, NSToolbarDel
     @objc private func beginVideoCrop() {
         guard !busy, videoTask == nil, !trimming, let crop = videoCropView else { return }
         revealVideoFrame(); videoCropping = true
-        player?.currentItem?.videoComposition = nil; videoPlayerView?.controlsStyle = .none
-        crop.selection = videoEdits.crop ?? CGRect(origin:.zero,size:crop.sourceSize); crop.isHidden = false
-        status.stringValue = "Drag the corner handles, or drag inside to move"
-        refreshVideoFrame(); updateControls()
+        // A paused original frame avoids retaining AVKit's floating controls backdrop
+        // or Live Text overlay above the crop. Playback keeps its current composition.
+        let time = player?.currentTime() ?? .zero
+        videoTask = Task { [weak self] in
+            guard let self else { return }
+            defer { videoTask = nil; updateControls() }
+            let asset = AVURLAsset(url:artifact.url), generator = AVAssetImageGenerator(asset:asset)
+            generator.appliesPreferredTrackTransform = true; generator.maximumSize = CGSize(width:2200,height:1800)
+            generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+            do {
+                guard let track = try await asset.loadTracks(withMediaType:.video).first else { throw ShotError("This file has no video.") }
+                let range = try await track.load(.timeRange), interval = try await track.load(.minFrameDuration)
+                let step = interval.isNumeric && interval.seconds > 0 ? interval.seconds : 1/Double(max(1,try await track.load(.nominalFrameRate)))
+                let position = min(max(range.start.seconds,time.seconds),max(range.start.seconds,range.end.seconds-step))
+                let image = try await generator.image(at:CMTime(seconds:position,preferredTimescale:60000)).image
+                guard !Task.isCancelled else { return }
+                videoCropFrame.image = NSImage(cgImage:image,size:CGSize(width:image.width,height:image.height))
+                videoCropFrame.isHidden = false; videoPlayerView?.isHidden = true
+                crop.selection = videoEdits.crop ?? CGRect(origin:.zero,size:crop.sourceSize); crop.isHidden = false
+                status.stringValue = "Drag the corner handles, or drag inside to move"
+            } catch { videoCropping = false; status.stringValue = error.localizedDescription }
+        }
+        updateControls()
     }
     private func finishVideoCrop() {
-        videoCropping = false; videoCropView?.isHidden = true; videoPlayerView?.controlsStyle = .floating
+        videoCropping = false; videoCropView?.isHidden = true; videoCropFrame.isHidden = true; videoCropFrame.image = nil; videoPlayerView?.isHidden = false
         status.stringValue = ""
         refreshVideoComposition()
     }
     @objc private func resetVideoEdits() {
         guard !busy, videoTask == nil, !trimming else { return }
         videoEdits = VideoEdits(); player?.currentItem?.reversePlaybackEndTime = .zero; player?.currentItem?.forwardPlaybackEndTime = .invalid
-        if videoCropping { videoCropping = false; videoCropView?.isHidden = true; videoPlayerView?.controlsStyle = .floating }
+        if videoCropping { videoCropping = false; videoCropView?.isHidden = true; videoCropFrame.isHidden = true; videoCropFrame.image = nil; videoPlayerView?.isHidden = false }
         refreshVideoComposition()
     }
     private func refreshVideoComposition() {

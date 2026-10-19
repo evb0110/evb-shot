@@ -90,6 +90,13 @@ enum EditorTest {
         try SelfTest.check(poster.isHidden,"playing removes the first-frame poster")
         view.player?.pause()
         try SelfTest.check(poster.isHidden,"pausing retains the current video frame")
+        if let player = view.player, let item = player.currentItem {
+            await player.seek(to:item.duration,toleranceBefore:.zero,toleranceAfter:.zero)
+            try action(controller,"Crop Frame").performClick(nil); await controller.videoTask?.value
+            try SelfTest.check(controller.videoCropView?.isHidden == false && view.isHidden,"cropping at the end of playback decodes the last available frame")
+            try action(controller,"Cancel").performClick(nil); await controller.videoTask?.value
+            try SelfTest.check(!view.isHidden && controller.videoEdits == VideoEdits(),"Cancel restores playback without changing the crop or time range")
+        }
         if video.hasAudio {
             guard let include = views.compactMap({ $0 as? NSButton }).first(where: { $0.title == "Include audio" }) else { throw ShotError("Video review must expose Include audio") }
             include.state = .off
@@ -154,7 +161,9 @@ enum EditorTest {
         let cropButton = try button("Crop Frame")
         try SelfTest.check(cropButton.isEnabled,"AVKit trim completion restores the video editing actions")
         try button("Crop Frame").performClick(nil)
+        await controller.videoTask?.value
         guard let crop = controller.videoCropView, !crop.isHidden else { throw ShotError("Crop Frame needs a visible crop overlay") }
+        try SelfTest.check(view.isHidden,"crop uses a clean paused frame without AVKit controls or frame analysis overlays")
         func point(_ pixel:CGPoint)->CGPoint {
             let rect = crop.videoRect
             return CGPoint(x:rect.minX+pixel.x*rect.width/crop.sourceSize.width,y:rect.minY+pixel.y*rect.height/crop.sourceSize.height)
